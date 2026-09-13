@@ -14,30 +14,55 @@
 
 """agents-cli lint command — run code linting."""
 
+import logging
+
 import click
 
+from google.agents.cli import _tools
+from google.agents.cli._project import chdir_project_root, read_project_config
 from google.agents.cli._runner import run
+from google.agents.cli.scaffold.utils.language import dispatch_language
+
+_GOLANGCI_LINT = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
+_GOLANGCI_LINT_INSTALL_URL = "https://golangci-lint.run/docs/welcome/install/local/"
 
 
 @click.command("lint")
 @click.option("--fix", is_flag=True, default=False, help="Auto-fix linting issues.")
-@click.option("--mypy", is_flag=True, default=False, help="Also run mypy type checking.")
+@click.option(
+    "--mypy",
+    is_flag=True,
+    default=False,
+    help="Also run mypy type checking. (Python only)",
+)
 @click.option(
     "--skip-codespell",
     is_flag=True,
     default=False,
-    help="Skip codespell spell checking.",
+    help="Skip codespell spell checking. (Python only)",
 )
-@click.option("--skip-ty", is_flag=True, default=False, help="Skip ty type checking.")
+@click.option(
+    "--skip-ty",
+    is_flag=True,
+    default=False,
+    help="Skip ty type checking. (Python only)",
+)
 def cmd_lint(fix, mypy, skip_codespell, skip_ty):
-    """Run code quality checks.
+    """Run code quality checks."""
+    chdir_project_root()
+    handler = dispatch_language("lint", LANGUAGE_HANDLERS, read_project_config().language)
+    handler(fix=fix, mypy=mypy, skip_codespell=skip_codespell, skip_ty=skip_ty)
 
-    \b
-    Runs: uv run ruff check .
-          uv run ruff format . --check
-          uv run codespell (unless --skip-codespell)
-          uv run ty check . (unless --skip-ty)
-          uv run mypy . (if --mypy)
+
+def _lint_python(*, fix: bool, mypy: bool, skip_codespell: bool, skip_ty: bool) -> None:
+    """Run Python code quality checks.
+
+    Runs, in order:
+      - ruff check .           (adds --fix when ``fix`` is set)
+      - ruff format . --check  (reformats in place when ``fix`` is set)
+      - codespell              (unless ``skip_codespell``)
+      - ty check .             (unless ``skip_ty``)
+      - mypy .                 (only when ``mypy`` is set)
     """
     # Sync lint extras before running
     run(
@@ -81,3 +106,57 @@ def cmd_lint(fix, mypy, skip_codespell, skip_ty):
             ["uv", "run", "mypy", "."],
             check_err_msg="Mypy check failed",
         )
+
+
+def _lint_go(*, fix: bool, mypy: bool, skip_codespell: bool, skip_ty: bool) -> None:
+    """Run Go code quality checks with ``golangci-lint``.
+
+    ``fix`` maps to ``golangci-lint run --fix``. Flags
+    that don't map to the Go toolchain are ignored with a warning.
+    """
+    ignored = [
+        flag
+        for flag, supplied in (
+            ("--mypy", mypy),
+            ("--skip-ty", skip_ty),
+            ("--skip-codespell", skip_codespell),
+        )
+        if supplied
+    ]
+    if ignored:
+        logging.warning(
+            "Flags %s are not supported for Go, ignoring.",
+            ", ".join(ignored),
+        )
+    cmd = [*_golangci_lint_invocation(), "run"]
+    if fix:
+        cmd.append("--fix")
+    run(cmd, check_err_msg="golangci-lint found issues")
+
+
+def _golangci_lint_invocation() -> list[str]:
+    """Return the command prefix for invoking golangci-lint.
+
+    Prefers a ``golangci-lint`` binary already on PATH,
+    falls back to ``go run`` at the pinned version when no binary is found.
+    """
+    try:
+        return [_tools.require_tool("golangci-lint")]
+    except _tools.ToolNotFoundError:
+        # Binary installation of golangci-lint is recommended by the maintainers.
+        # See https://golangci-lint.run/docs/welcome/install/local/.
+        click.echo(
+            "golangci-lint not found on PATH; falling back to `go run`.\n"
+            "  For faster runs, install the binary: "
+            f"{_GOLANGCI_LINT_INSTALL_URL}"
+        )
+        return ["go", "run", _GOLANGCI_LINT]
+
+
+# `None` = not supported yet; dispatch_language raises a clear error.
+LANGUAGE_HANDLERS = {
+    "python": _lint_python,
+    "go": _lint_go,
+    "java": None,
+    "typescript": None,
+}

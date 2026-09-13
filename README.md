@@ -11,7 +11,7 @@
     <a href="https://github.com/google/agents-cli/issues">Issues</a> &nbsp;&nbsp;|&nbsp;&nbsp;
     <a href="https://google.github.io/agents-cli/">Docs</a> &nbsp;&nbsp;|&nbsp;&nbsp;
     <a href="https://github.com/google/agents-cli/blob/main/RELEASE_NOTES.md">Release Notes</a> &nbsp;&nbsp;|&nbsp;&nbsp;
-    <a href="https://github.com/google/agents-cli/stargazers">Star us</a>
+    <a href="https://github.com/google/agents-cli">Star us</a>
   </p>
 </div>
 
@@ -76,9 +76,8 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | Command | What it does |
 |---------|-------------|
 | `agents-cli setup` | Install CLI + skills to coding agents |
-| `agents-cli scaffold <name>` | Create a new agent project |
-| `agents-cli eval generate` | Run agent on eval dataset, produce traces |
-| `agents-cli eval grade` | Run agent evaluations on the traces |
+| `agents-cli create <name>` | Create a new agent project |
+| `agents-cli eval run` | Run the agent over the eval dataset and grade the traces |
 | `agents-cli deploy` | Deploy to Google Cloud |
 | `agents-cli publish gemini-enterprise` | Register with Gemini Enterprise |
 
@@ -90,14 +89,15 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `agents-cli login` | Authenticate with Google Cloud or AI Studio |
 | `agents-cli login --status` | Show authentication status |
 | **Scaffold** | |
-| `agents-cli scaffold <name>` | Create a new agent project |
-| `agents-cli scaffold enhance` | Add deployment, CI/CD, or RAG to an existing project |
+| `agents-cli create <name>` | Create a new agent project |
+| `agents-cli scaffold enhance` | Add deployment or CI/CD to an existing project |
 | `agents-cli scaffold upgrade` | Upgrade project to a newer agents-cli version |
 | **Develop** | |
 | `agents-cli run "prompt"` | Run agent with a single prompt |
 | `agents-cli install` | Install project dependencies |
 | `agents-cli lint` | Run code quality checks (Ruff) |
 | **Evaluate** | |
+| `agents-cli eval run` | Run agent inference and grade the traces |
 | `agents-cli eval generate` | Run agent inference over eval cases |
 | `agents-cli eval grade` | Grade generated traces against metrics |
 | `agents-cli eval dataset synthesize` | Synthesize multi-turn eval scenarios for your local agent |
@@ -110,9 +110,6 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `agents-cli publish gemini-enterprise` | Register with Gemini Enterprise |
 | `agents-cli infra single-project` | Provision single-project infrastructure |
 | `agents-cli infra cicd` | Set up CI/CD pipeline + staging/prod infrastructure |
-| **Data** | |
-| `agents-cli infra datastore` | Provision datastore infrastructure for RAG |
-| `agents-cli data-ingestion` | Run data ingestion pipeline |
 | **Other** | |
 | `agents-cli info` | Show project config and CLI version |
 | `agents-cli update` | Force reinstall skills to all IDEs |
@@ -171,12 +168,3 @@ See the [contributing guide](CONTRIBUTING.md) for details.
 ## Terms of Service
 
 `agents-cli` leverages Google Cloud APIs. When you deploy agents, you'll be deploying resources in your own Google Cloud project and will be responsible for those resources. Please review the [Google Cloud Service Terms](https://cloud.google.com/terms/service-terms) for details.
-
-## Preview
-
-This feature is subject to the "Pre-GA Offerings Terms" in the General Service
-Terms section of the
-[Service Specific Terms](https://cloud.google.com/terms/service-terms#1).
-Pre-GA features are available "as is" and might have limited support. For more
-information, see the
-[launch stage descriptions](https://cloud.google.com/products?hl=en#product-launch-stages).

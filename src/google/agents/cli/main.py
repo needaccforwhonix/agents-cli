@@ -19,17 +19,30 @@ modules are imported only when the user invokes the command (or asks for
 its specific --help). See `LazyGroup` in `_click.py`.
 """
 
+from __future__ import annotations
+
 import io
+import logging
 import os
 import sys
 import traceback
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
-from google.agents.cli import _tools
 from google.agents.cli.__init__ import __version__
 from google.agents.cli._click import LazyGroup, patch_source_in_help
-from google.agents.cli._project import is_project_moved
+from google.agents.cli._project import find_project_root, is_project_moved
+from google.agents.cli._runner import DISABLE_OVERRIDES_ENV
+
+# Type-only: nothing under `extension.` may be imported at module scope. A run
+# that bypasses overrides (AGENTS_CLI_DISABLE_OVERRIDES=1 — set for any command
+# an extension re-enters) must not load extension discovery at all, and every other
+# invocation pays for the import on cold start. `_apply_extensions` imports them
+# only once it knows they are needed.
+if TYPE_CHECKING:
+    from google.agents.cli.extension._loader import ExtensionSet, ResolvedCommand
 
 # Force utf-8 encoding and non-exception fallback for printing
 if isinstance(sys.stdout, io.TextIOWrapper):
@@ -45,13 +58,263 @@ def _print_is_project_moved_tip() -> None:
         " re-run your original command"
     )
     if is_project_moved():
-        from rich.console import Console
+        from google.agents.cli._output import Console
 
         Console().print(message, style="cyan")
 
 
 class _MainGroup(LazyGroup):
     """Click group with lazy command loading and full-traceback exception handling."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._extensions_applied = False
+
+    def list_commands(self, ctx):
+        self._apply_extensions()
+        return super().list_commands(ctx)
+
+    def get_command(self, ctx, cmd_name):
+        self._apply_extensions()
+        return super().get_command(ctx, cmd_name)
+
+    def _apply_extensions(self) -> None:
+        if self._extensions_applied:
+            return
+        self._extensions_applied = True
+        # Extension modules are imported here (not at module top) so a bypassed run
+        # (AGENTS_CLI_DISABLE_OVERRIDES=1, e.g. an override re-entering the CLI)
+        # never loads the extension discovery code.
+        if os.environ.get(DISABLE_OVERRIDES_ENV) == "1":
+            return
+
+        from google.agents.cli.extension._loader import load_extension_set
+        from google.agents.cli.extension._paths import user_config_root
+
+        project_root = find_project_root(Path.cwd())
+        user_root = user_config_root()
+        extension_set = load_extension_set(project_root, user_root)
+
+        # Surface any extension whose declared `requires.agents_cli` range excludes
+        # the running CLI. In "error" mode the loader keeps the claim and marks
+        # it blocked, so only that extension's commands fail; recovery commands
+        # stay on the built-in. We only warn here.
+        for inc in extension_set.incompatible:
+            if inc.error_on_incompatible:
+                logging.warning(
+                    "agents-cli: extension %r requires agents-cli %s but running %s; "
+                    "its commands will fail until you run `agents-cli extension "
+                    "update %s`, remove it, or pin a compatible CLI.",
+                    inc.name,
+                    inc.requires_agents_cli,
+                    extension_set.running_version,
+                    inc.name,
+                )
+            else:
+                logging.warning(
+                    "agents-cli: extension %r requires agents-cli %s but running %s; "
+                    "applying anyway (may misbehave).",
+                    inc.name,
+                    inc.requires_agents_cli,
+                    extension_set.running_version,
+                )
+
+        if not extension_set.commands:
+            return
+
+        applied: list[str] = []
+        for name, resolved in extension_set.commands.items():
+            if self._install(name, resolved):
+                applied.append(name)
+            applied.extend(self._mirror_onto_aliases(name, resolved, extension_set))
+
+        if applied:
+            # Name the source (extension + scope) of each applied command so it is
+            # always visible WHICH extension is taking over a command — project
+            # scope means an extension committed to / auto-loaded from this repo.
+            def _detail(name: str) -> str:
+                r = extension_set.commands.get(name)
+                if r is None:
+                    return name
+                # A blocked command is claimed but will refuse to run, so don't
+                # report it as though the extension's vector is in play.
+                state = " BLOCKED" if r.blocked_requires else ""
+                return f"{name} [{r.extension_name}/{r.scope}{state}]"
+
+            details = [_detail(n) for n in sorted(applied)]
+            # Logged at WARNING (not INFO) so the takeover is visible by
+            # default: auto-loaded project-scope extensions run with the same
+            # trust as the repo you're in, and naming each override's source
+            # is the compensating control for that (no silent takeover).
+            logging.warning(
+                "agents-cli: applying %d extension command(s): %s",
+                len(applied),
+                ", ".join(details),
+            )
+
+    def _mirror_onto_aliases(
+        self, dotted: str, resolved: ResolvedCommand, extension_set: ExtensionSet
+    ) -> list[str]:
+        """Apply an override of `group.sub` to top-level aliases of the same command.
+
+        `create` and `scaffold create` are two registrations of one command
+        (identical `module:obj` target), so overriding the canonical
+        `scaffold.create` must also take over `create`. The pairing is derived
+        from the registry rather than hardcoded, so it can't rot when a command
+        moves — and no extra modules are imported to work it out: the parent
+        group is already loaded by the subcommand install above.
+        """
+        if "." not in dotted:
+            return []
+        group_name, sub_name = dotted.split(".", 1)
+        # Already imported by the subcommand install, so this is a cache hit.
+        parent = self._load_builtin(group_name)
+        if not isinstance(parent, LazyGroup):
+            return []
+        entry = parent._lazy_commands.get(sub_name)
+        if entry is None:
+            return []
+        mirrored: list[str] = []
+        for alias, (target, _short_help) in self._lazy_commands.items():
+            # Skip aliases an extension claimed itself — that override wins.
+            if target != entry[0] or alias in extension_set.commands:
+                continue
+            if self._install(alias, resolved):
+                mirrored.append(alias)
+        return mirrored
+
+    def _builtin_names(self) -> set[str]:
+        return set(self._lazy_commands) | set(self.commands)
+
+    def _load_builtin(self, name: str):
+        import importlib
+
+        loaded = self.commands.get(name)
+        if loaded is not None:
+            return loaded
+        entry = self._lazy_commands.get(name)
+        if entry is None:
+            return None
+        module_path, attr = entry[0].split(":")
+        try:
+            return getattr(importlib.import_module(module_path), attr)
+        except Exception as e:  # import failure shouldn't crash extension application
+            logging.warning("Could not load built-in %r for override check: %s", name, e)
+            return None
+
+    def _install(self, name: str, resolved: ResolvedCommand) -> bool:
+        """Install one command; dotted names (group.sub) target a subcommand."""
+        if "." in name:
+            return self._install_subcommand(name, resolved)
+        return self._install_top_level(name, resolved)
+
+    def _synthesize(self, resolved: ResolvedCommand, *, leaf: str, display: str):
+        """Build the Click command for a contribution: the real one, or a stub.
+
+        A stub is used when the owning extension is out of its declared range in
+        `error` mode; it fails with the range and the remedies instead of
+        running the extension's vector.
+        """
+        from google.agents.cli.extension._overrides import (
+            make_blocked_command,
+            make_override_command,
+        )
+
+        if resolved.blocked_requires is not None:
+            return make_blocked_command(
+                extension_name=resolved.extension_name,
+                leaf_name=leaf,
+                display_path=display,
+                requires=resolved.blocked_requires,
+                running=__version__,
+            )
+        return make_override_command(
+            resolved.contribution,
+            extension_name=resolved.extension_name,
+            scope=resolved.scope,
+            leaf_name=leaf,
+            display_path=display,
+            extension_root=resolved.extension_root,
+        )
+
+    def _install_top_level(self, name: str, resolved: ResolvedCommand) -> bool:
+
+        is_builtin = name in self._builtin_names()
+        if resolved.contribution.kind == "add" and is_builtin:
+            logging.warning(
+                "Extension %r tried to add command %r, which is a built-in; "
+                "use commands.override instead. Skipping.",
+                resolved.extension_name,
+                name,
+            )
+            return False
+        if resolved.contribution.kind == "override" and not is_builtin:
+            logging.warning(
+                "Extension %r overrides unknown command %r; skipping.",
+                resolved.extension_name,
+                name,
+            )
+            return False
+        if is_builtin and isinstance(self._load_builtin(name), click.Group):
+            logging.warning(
+                "Extension %r cannot override command group %r; override a "
+                "subcommand instead (e.g. %s.<sub>). Skipping.",
+                resolved.extension_name,
+                name,
+                name,
+            )
+            return False
+        self._overrides[name] = self._synthesize(resolved, leaf=name, display=name)
+        return True
+
+    def _install_subcommand(self, dotted: str, resolved: ResolvedCommand) -> bool:
+        parts = dotted.split(".")
+        if len(parts) != 2:
+            logging.warning(
+                "Extension %r: only single-level subcommand overrides "
+                "(group.sub) are supported in v1; skipping %r.",
+                resolved.extension_name,
+                dotted,
+            )
+            return False
+        group_name, sub_name = parts
+        if group_name not in self._builtin_names():
+            logging.warning(
+                "Extension %r: parent command %r is not a built-in; skipping %r.",
+                resolved.extension_name,
+                group_name,
+                dotted,
+            )
+            return False
+        parent = self._load_builtin(group_name)
+        if not isinstance(parent, LazyGroup):
+            logging.warning(
+                "Extension %r: %r is not a command group; skipping %r.",
+                resolved.extension_name,
+                group_name,
+                dotted,
+            )
+            return False
+        sub_known = sub_name in parent._lazy_commands or sub_name in parent.commands
+        if resolved.contribution.kind == "override" and not sub_known:
+            logging.warning(
+                "Extension %r: %r has no subcommand %r; skipping.",
+                resolved.extension_name,
+                group_name,
+                sub_name,
+            )
+            return False
+        if resolved.contribution.kind == "add" and sub_known:
+            logging.warning(
+                "Extension %r: subcommand %r already exists; use override. Skipping.",
+                resolved.extension_name,
+                dotted,
+            )
+            return False
+        parent._overrides[sub_name] = self._synthesize(
+            resolved, leaf=sub_name, display=f"{group_name} {sub_name}"
+        )
+        return True
 
     def invoke(self, ctx: click.Context) -> None:
         try:
@@ -63,10 +326,11 @@ class _MainGroup(LazyGroup):
             _print_is_project_moved_tip()
             raise
         except KeyboardInterrupt:
-            from rich.console import Console
+            from google.agents.cli._output import Console
 
-            Console().print(f"\nagents-cli v{__version__}", style="dim")
-            Console().print("Operation cancelled by user", style="yellow")
+            console = Console()
+            console.print(f"\nagents-cli v{__version__}", style="dim")
+            console.print("Operation cancelled by user", style="yellow")
             ctx.exit(130)
         except Exception:
             click.echo(f"agents-cli v{__version__}", err=True)
@@ -87,8 +351,7 @@ def main():
       agents-cli setup                 Install skills to your coding agent
       agents-cli create my-agent       Create a new agent project
       agents-cli playground            Start the local playground
-      agents-cli eval generate         Run agent inference over eval cases
-      agents-cli eval grade            Grade generated traces
+      agents-cli eval run              Run agent inference and grade the traces
       agents-cli scaffold enhance .    Add deployment/CI-CD to a project
       agents-cli deploy                Deploy the agent
     """
@@ -102,7 +365,6 @@ def main():
 
     display_update_message()
     check_skills_version()
-    _tools.require_tool("uv")
 
 
 # Setup commands
@@ -157,6 +419,12 @@ main.add_lazy_command(
     "google.agents.cli.dev.cmd_install:cmd_install",
     "Install project dependencies.",
 )
+main.add_lazy_command(
+    "build",
+    "google.agents.cli.dev.cmd_build:cmd_build",
+    "Build the agent binary.",
+    experiment="build_command",
+)
 
 # Data commands
 main.add_lazy_command(
@@ -189,6 +457,13 @@ main.add_lazy_command(
     "infra",
     "google.agents.cli.infra.cmd_infra:infra_group",
     "Provision infrastructure for your agent project.",
+)
+
+# Extension commands
+main.add_lazy_command(
+    "extension",
+    "google.agents.cli.extension.cmd_extension_group:extension_group",
+    "Manage agents-cli extensions (experimental).",
 )
 
 # Info command

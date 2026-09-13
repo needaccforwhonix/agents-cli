@@ -25,7 +25,9 @@ import tomllib
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console
+import click
+
+from google.agents.cli._output import Console
 
 
 @dataclass
@@ -36,6 +38,11 @@ class RemoteTemplateSpec:
     template_path: str
     git_ref: str
     is_adk_samples: bool = False
+
+
+def is_template_spec(value: str) -> bool:
+    """True for a value naming a template to fetch rather than one this CLI ships."""
+    return value.startswith("local@") or parse_agent_spec(value) is not None
 
 
 def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
@@ -76,7 +83,7 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
 
     # General remote pattern: <repo_url>[/<path>][@<ref>]
     # Handles github.com, gitlab.com, etc.
-    remote_pattern = r"^(https?://[^/]+/[^/]+/[^/]+)(?:/(.*?))?(?:@([^/]+))?/?$"
+    remote_pattern = r"^(https?://[^/]+/[^/]+/[^/@]+)(?:/(.*?))?(?:@([^/]+))?/?$"
     match = re.match(remote_pattern, agent_spec)
     if match:
         repo_url = match.group(1)
@@ -103,7 +110,7 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
         )
 
     # GitHub shorthand: <org>/<repo>[/<path>][@<ref>]
-    github_shorthand_pattern = r"^([^/]+)/([^/]+)(?:/(.*?))?(?:@([^/]+))?/?$"
+    github_shorthand_pattern = r"^([^/]+)/([^/@]+)(?:/(.*?))?(?:@([^/]+))?/?$"
     match = re.match(github_shorthand_pattern, agent_spec)
     if match and "/" in agent_spec:  # Ensure it has at least one slash
         org = match.group(1)
@@ -366,8 +373,9 @@ def load_remote_template_config(
     cli_overrides: dict[str, Any] | None = None,
     is_adk_sample: bool = False,
 ) -> dict[str, Any]:
-    """Load template configuration from remote template's agents-cli-manifest.yaml
-    (or legacy [tool.agents-cli] section in pyproject.toml) with CLI overrides.
+    """Load template configuration from remote template's .template/templateconfig.yaml,
+    agents-cli-manifest.yaml, or legacy [tool.agents-cli] section in pyproject.toml
+    with CLI overrides.
 
     CLI overrides take precedence over all other sources. For ADK samples without
     explicit config, uses smart inference for agent directory naming.
@@ -392,11 +400,32 @@ def load_remote_template_config(
     }
     config.update(defaults)
 
-    # Load from agents-cli-manifest.yaml or pyproject.toml
+    # Load from .template/templateconfig.yaml, agents-cli-manifest.yaml, or pyproject.toml
+    template_config_path = template_dir / ".template" / "templateconfig.yaml"
     manifest_path = template_dir / "agents-cli-manifest.yaml"
     pyproject_path = template_dir / "pyproject.toml"
 
-    if manifest_path.exists():
+    if template_config_path.exists():
+        try:
+            import yaml
+
+            with open(template_config_path, encoding="utf-8") as f:
+                template_config = yaml.safe_load(f) or {}
+            has_explicit_config = bool(template_config)
+            if template_config:
+                config.update(template_config)
+                logging.debug(
+                    "Found explicit .template/templateconfig.yaml configuration"
+                )
+        except Exception as e:
+            # Falling through would treat the template as an ADK sample and
+            # render a different project than the one it declares. ClickException
+            # so the commands that surface it print the template author's typo
+            # as an error rather than a traceback.
+            raise click.ClickException(
+                f"{template_config_path.name} is not valid YAML: {e}"
+            ) from e
+    elif manifest_path.exists():
         try:
             import yaml
 
@@ -444,8 +473,10 @@ def load_remote_template_config(
                 f"No config file found for ADK sample {template_dir.name}, will use inference"
             )
         else:
-            logging.debug(
-                f"No config file found for template {template_dir.name}, using defaults"
+            logging.warning(
+                "%s declares no agents-cli configuration, so it is treated as an ADK "
+                "template. Add .template/templateconfig.yaml to say otherwise.",
+                template_dir.name,
             )
 
     # Apply ADK inference if no explicit config and this is an ADK sample

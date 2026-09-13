@@ -27,7 +27,7 @@ Create a new project from a template:
 agents-cli create my-agent
 ```
 
-Choose your agent template (`adk`) and deployment target during creation. (RAG is a clone-and-study recipe — see [Templates](templates.md#rag-retrieval-augmented-generation).) For fast prototyping without infrastructure decisions:
+Choose your agent template (`adk`) and deployment target during creation. For fast prototyping without infrastructure decisions:
 
 ```bash
 agents-cli create my-agent --prototype --yes
@@ -35,7 +35,20 @@ agents-cli create my-agent --prototype --yes
 
 You can add deployment support later with `agents-cli scaffold enhance`.
 
-See [Agent Templates](templates.md) for all options.
+### Extending the starter agent
+
+The scaffold creates a starter agent: a model, an instruction, and one sample tool. Anything beyond that comes from a recipe. Recipes are working agents in [google/adk-samples](https://github.com/google/adk-samples) that you clone and adapt.
+
+Recipes cover:
+
+- Retrieval over your own documents
+- Sandboxed code execution
+- Memory across sessions
+- OAuth consent
+- Approval gates before risky actions
+- Event-driven runs
+
+Your coding agent picks the recipe for you. The `google-agents-cli-adk-code` skill contains a [topic index](../reference/skills.md#adk-code) (or the [samples reference](https://github.com/google/agents-cli/blob/main/skills/google-agents-cli-adk-code/references/samples.md)) that maps each need to a recipe, and the workflow skill tells the agent to read the index before writing code. Ask for an agent that answers questions from your docs, and it opens `rag-agent-search`.
 
 ---
 
@@ -79,8 +92,7 @@ Add and remove dependencies with [uv](https://docs.astral.sh/uv/):
 Run structured evaluations to validate agent behavior. This uses the [GenAI Eval SDK](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation) under the hood.
 
 ```bash
-agents-cli eval generate
-agents-cli eval grade
+agents-cli eval run
 ```
 
 Expect **5-10+ iterations** of the eval-fix loop before your agent consistently passes. Start with 1-2 core eval cases, fix failures, then expand coverage.
@@ -91,7 +103,7 @@ See the [Evaluation Guide](evaluation.md) for metrics, dataset schemas, and the 
 
 ## Phase 4: Deploy
 
-Once evaluation thresholds are met, deploy to Google Cloud.
+Once the eval scores are good enough, deploy to Google Cloud.
 
 1. **Add a deployment target** (if you started with `--prototype`):
 

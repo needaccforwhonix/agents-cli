@@ -146,6 +146,10 @@ dmypy.json
 .terraform*
 .Terraform*
 
+# Terraform state.
+*.tfstate
+*.tfstate.*
+
 
 tmp*
 .agents-cli-scripts/
@@ -186,10 +190,10 @@ testem.log
 .DS_Store
 Thumbs.db
 *.vscode*
-
+{% if 'adk' in cookiecutter.tags %}
 # ADK
 .adk/
-
+{% endif %}
 # Agent CLI specific
 .persist_vector_store
 tests/load_test/.results/*.html

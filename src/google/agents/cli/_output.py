@@ -17,11 +17,22 @@
 import json
 import sys
 from enum import IntEnum
+from typing import Any
+
+from rich.console import Console as _RichConsole  # noqa: TID251
 
 
 class ExitCode(IntEnum):
     OK = 0
     ERROR = 1
+
+
+class Console(_RichConsole):
+    """Rich Console configured with project-wide defaults (soft_wrap=True)."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("soft_wrap", True)
+        super().__init__(*args, **kwargs)
 
 
 def emit(data: dict) -> None:

@@ -27,7 +27,7 @@ The new eval surface (`eval generate`, `eval grade`, `eval dataset synthesize`, 
 | Directory | `tests/eval/evalsets/` | `tests/eval/datasets/` |
 | Filename | `*.evalset.json` | `*-dataset.json` |
 | Default file | `basic.evalset.json` | `basic-dataset.json` |
-| Schema source | `google.adk.evaluation` | `vertexai._genai.types.EvaluationDataset` |
+| Schema source | `google.adk.evaluation` | `agentplatform._genai.types.EvaluationDataset` |
 
 `agents-cli eval generate` looks for `tests/eval/datasets/basic-dataset.json` by default. Use `--dataset PATH` to point at a different file.
 

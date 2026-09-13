@@ -21,7 +21,8 @@ import logging
 import pathlib
 import re
 import tomllib
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import yaml
@@ -85,23 +86,40 @@ class FileCompareResult:
     new_template_hash: str | None = None
 
 
+class DependencyReadError(Exception):
+    """A dependency manifest could not be read — it's missing or unparseable."""
+
+
 @dataclass
-class DependencyChange:
-    """A single dependency change."""
+class DependencyResolution:
+    """What the merge decided to do with one dependency.
+
+    Every dependency gets one of these, even ones that stay the same.
+    Statuses:
+      - "added": the template introduced this dependency.
+      - "updated": a template-managed dependency whose spec the template changed.
+      - "removed": a template-managed dependency the new template dropped.
+      - "unchanged": a template-managed dependency the template left as-is.
+      - "kept": a dependency *the user* added, preserved untouched.
+    "kept" and "unchanged" both leave the written value the same, but differ in
+    ownership: "kept" is the user's own dependency, "unchanged" is the template's.
+    They are also displayed differently ("kept" is surfaced, "unchanged" hidden).
+    """
 
     name: str
-    change_type: Literal["updated", "added", "removed", "kept"]
+    status: Literal["updated", "added", "removed", "kept", "unchanged"]
     old_version: str | None = None
     new_version: str | None = None
 
+    def full_name(self) -> str:
+        """The full name to write to a dependency file.
 
-@dataclass
-class DependencyMergeResult:
-    """Result of merging dependencies."""
+        For Python: ``name[extra]version`` (e.g. ``requests[security]==2.32.5``)
+        For Go: ``module@version`` (e.g. ``google.golang.org/adk@v2.2.0``)
 
-    changes: list[DependencyChange] = field(default_factory=list)
-    merged_deps: list[str] = field(default_factory=list)
-    has_conflicts: bool = False
+        Valid for every status except "removed" (which has no new version).
+        """
+        return f"{self.name}{self.new_version or ''}"
 
 
 def _expand_patterns(patterns: list[str], agent_directory: str) -> list[str]:
@@ -389,134 +407,145 @@ def _parse_dependency(dep_str: str) -> tuple[str, str, str]:
 
 def _load_dependencies_from_pyproject(
     pyproject_path: pathlib.Path,
-) -> dict[str, tuple[str, str]]:
-    """Load dependencies as {base_name: (extras, version_spec)} dict."""
+) -> dict[str, str]:
+    """Load dependencies as {base_name: version_spec} dict.
+
+    version_spec is the [extras]version suffix (e.g. "[eval]>=1.0").
+
+    Raises DependencyReadError if pyproject.toml is missing or unparseable — a
+    present file with no dependencies yields {}.
+    """
     if not pyproject_path.exists():
-        return {}
+        raise DependencyReadError(f"Dependency manifest not found: {pyproject_path}")
 
     try:
         with open(pyproject_path, "rb") as f:
             data = tomllib.load(f)
 
         deps = data.get("project", {}).get("dependencies", [])
-        result: dict[str, tuple[str, str]] = {}
+        result: dict[str, str] = {}
         for dep in deps:
             name, extras, version = _parse_dependency(dep)
-            result[name] = (extras, version)
+            result[name] = f"{extras}{version}"
         return result
     except Exception as e:
-        logging.warning(f"Error loading dependencies from {pyproject_path}: {e}")
-        return {}
+        raise DependencyReadError(
+            f"Could not read dependencies from {pyproject_path}: {e}"
+        ) from e
 
 
-def merge_pyproject_dependencies(
-    current_pyproject: pathlib.Path,
-    old_template_pyproject: pathlib.Path,
-    new_template_pyproject: pathlib.Path,
-) -> DependencyMergeResult:
-    """Merge deps: new_template + user_added, where user_added = current - old."""
-    current_deps = _load_dependencies_from_pyproject(current_pyproject)
-    old_deps = _load_dependencies_from_pyproject(old_template_pyproject)
-    new_deps = _load_dependencies_from_pyproject(new_template_pyproject)
+def _resolve_dependencies(
+    current: dict[str, str],
+    old: dict[str, str],
+    new: dict[str, str],
+) -> list[DependencyResolution]:
+    """Merge deps from three sources.
 
-    changes: list[DependencyChange] = []
-    merged: dict[str, tuple[str, str]] = {}
-    user_added = set(current_deps.keys()) - set(old_deps.keys())
-    acli_managed = set(old_deps.keys())
+    Returns a list of one DependencyResolution per dependency.
 
-    for name, (new_extras, new_version) in new_deps.items():
-        merged[name] = (new_extras, new_version)
+    New template deps take precedence over old template deps. User-added deps
+    (``current - old``) are kept. Template deps dropped in ``new`` are removed.
 
-        if name in old_deps:
-            old_extras, old_version = old_deps[name]
-            old_spec = f"{old_extras}{old_version}"
-            new_spec = f"{new_extras}{new_version}"
-            if old_spec != new_spec:
-                changes.append(
-                    DependencyChange(
-                        name=name,
-                        change_type="updated",
-                        old_version=old_spec,
-                        new_version=new_spec,
-                    )
-                )
-        else:
-            changes.append(
-                DependencyChange(
+    ``version_spec`` is the language-native suffix appended to the name to form
+    the full identifier — Python ``"[extra]>=1.0"``, Go ``"@v1.2.3"``. Plain string comparison
+    on it can be used to determine whether a dependency has changed.
+
+    Returns one DependencyResolution per dependency, including "unchanged" ones.
+    """
+    resolutions: list[DependencyResolution] = []
+    user_added = set(current) - set(old)
+    acli_managed = set(old)
+
+    for name, new_spec in new.items():
+        if name in old:
+            old_spec = old[name]
+            resolutions.append(
+                DependencyResolution(
                     name=name,
-                    change_type="added",
-                    new_version=f"{new_extras}{new_version}",
+                    status="updated" if old_spec != new_spec else "unchanged",
+                    old_version=old_spec,
+                    new_version=new_spec,
                 )
+            )
+        elif name in user_added:
+            # The dependency is new to the template, but the user already added
+            # it independently. Keep the user's version and emit a warning.
+            # DependencyResolution will be added later as 'kept'.
+            user_spec = current[name]
+            logging.warning(
+                f"Dependency '{name}' is now added by the template ({new_spec}) "
+                f"but your project already pins it ({user_spec}). Keeping your "
+                f"version; if the upgrade misbehaves, reconcile it with the "
+                f"template's expected {new_spec}."
+            )
+        else:
+            resolutions.append(
+                DependencyResolution(name=name, status="added", new_version=new_spec)
             )
 
     for name in user_added:
-        user_extras, user_version = current_deps[name]
-        merged[name] = (user_extras, user_version)
-        user_spec = f"{user_extras}{user_version}"
-        changes.append(
-            DependencyChange(
+        user_spec = current[name]
+        resolutions.append(
+            DependencyResolution(
                 name=name,
-                change_type="kept",
+                status="kept",
                 old_version=user_spec,
                 new_version=user_spec,
             )
         )
 
     for name in acli_managed:
-        if name not in new_deps and name not in user_added:
-            old_extras, old_version = old_deps[name]
-            changes.append(
-                DependencyChange(
-                    name=name,
-                    change_type="removed",
-                    old_version=f"{old_extras}{old_version}",
-                )
+        if name not in new and name not in user_added:
+            resolutions.append(
+                DependencyResolution(name=name, status="removed", old_version=old[name])
             )
 
-    merged_list = [
-        f"{name}{extras}{version}" for name, (extras, version) in sorted(merged.items())
-    ]
+    return resolutions
 
-    return DependencyMergeResult(
-        changes=changes,
-        merged_deps=merged_list,
-        has_conflicts=False,
+
+def merge_python_dependencies(
+    current_project: pathlib.Path,
+    old_template_project: pathlib.Path,
+    new_template_project: pathlib.Path,
+) -> list[DependencyResolution]:
+    """Merge Python deps: new_template + user_added, where user_added = current - old.
+
+    Returns a list of one DependencyResolution per dependency.
+    """
+    return _resolve_dependencies(
+        _load_dependencies_from_pyproject(current_project / "pyproject.toml"),
+        _load_dependencies_from_pyproject(old_template_project / "pyproject.toml"),
+        _load_dependencies_from_pyproject(new_template_project / "pyproject.toml"),
     )
 
 
-def write_merged_dependencies(
-    pyproject_path: pathlib.Path,
-    merged_deps: list[str],
+def write_python_dependencies(
+    project_dir: pathlib.Path,
+    resolutions: list[DependencyResolution],
 ) -> bool:
-    """Write merged dependencies to pyproject.toml using uv CLI.
+    """Write merged dependencies to project_dir/pyproject.toml using uv CLI.
 
     Uses ``uv add --frozen`` and ``uv remove --frozen`` so the lockfile
     and virtualenv are left untouched — only pyproject.toml is modified.
 
     Args:
-        pyproject_path: Path to pyproject.toml
-        merged_deps: List of dependency strings to write
+        project_dir: The project directory containing pyproject.toml
+        resolutions: Per-dependency merge resolutions to apply
 
     Returns:
         True if successful, False otherwise
     """
+    pyproject_path = project_dir / "pyproject.toml"
     if not pyproject_path.exists():
         return False
-
-    project_dir = pyproject_path.parent
 
     try:
         from google.agents.cli._runner import run_resolved
         from google.agents.cli._tools import ToolNotFoundError
 
-        # Determine which deps to remove (in current but not in merged)
-        current_deps = _load_dependencies_from_pyproject(pyproject_path)
-        merged_names: set[str] = set()
-        for dep in merged_deps:
-            name, _, _ = _parse_dependency(dep)
-            merged_names.add(name)
-
-        to_remove = [n for n in current_deps if n not in merged_names]
+        ordered: list[DependencyResolution] = sorted(resolutions, key=lambda r: r.name)
+        to_remove = [r.name for r in ordered if r.status == "removed"]
+        to_add = [r.full_name() for r in ordered if r.status != "removed"]
 
         if to_remove:
             result = run_resolved(
@@ -528,10 +557,9 @@ def write_merged_dependencies(
             if result.returncode != 0:
                 logging.warning(f"uv remove failed: {result.stderr}")
 
-        # Add / update all merged deps
-        if merged_deps:
+        if to_add:
             result = run_resolved(
-                ["uv", "add", "--frozen", *merged_deps],
+                ["uv", "add", "--frozen", *to_add],
                 cwd=project_dir,
                 capture_output=True,
                 text=True,
@@ -550,29 +578,156 @@ def write_merged_dependencies(
         return False
 
 
+def _load_dependencies_from_go_mod(go_mod_path: pathlib.Path) -> dict[str, str]:
+    """Load go.mod requirements as ``{module_path: "@version"}``.
+
+    Parsing is delegated to ``go mod edit -json``.
+
+    Raises DependencyReadError if go.mod is missing or can't be parsed
+    (go toolchain unavailable, bad go.mod). A present go.mod with no requirements yields {}.
+    See https://go.dev/ref/mod#go-mod-edit for the JSON schema.
+    """
+    if not go_mod_path.exists():
+        raise DependencyReadError(f"Dependency manifest not found: {go_mod_path}")
+
+    try:
+        from google.agents.cli._runner import run_resolved
+
+        result = run_resolved(
+            ["go", "mod", "edit", "-json", str(go_mod_path)],
+            capture_output=True,
+            text=True,
+        )
+    except Exception as e:
+        raise DependencyReadError(f"Could not read {go_mod_path}: {e}") from e
+
+    if result.returncode != 0:
+        raise DependencyReadError(
+            f"go mod edit -json failed for {go_mod_path}: {result.stderr}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise DependencyReadError(
+            f"Could not parse go.mod requirements from {go_mod_path}: {e}"
+        ) from e
+
+    requires: dict[str, str] = {}
+    for req in data.get("Require") or []:
+        if req.get("Path") and req.get("Version"):
+            requires[req["Path"]] = f"@{req['Version']}"
+
+    return requires
+
+
+def merge_go_dependencies(
+    current_project: pathlib.Path,
+    old_template_project: pathlib.Path,
+    new_template_project: pathlib.Path,
+) -> list[DependencyResolution]:
+    """Merge Go deps: new_template + user_added, where user_added = current - old.
+
+    Same 3-way logic as :func:`merge_python_dependencies`, over go.mod requirements.
+    """
+    return _resolve_dependencies(
+        _load_dependencies_from_go_mod(current_project / "go.mod"),
+        _load_dependencies_from_go_mod(old_template_project / "go.mod"),
+        _load_dependencies_from_go_mod(new_template_project / "go.mod"),
+    )
+
+
+def write_go_dependencies(
+    project_dir: pathlib.Path,
+    resolutions: list[DependencyResolution],
+) -> bool:
+    """Write merged Go requirements to project_dir/go.mod using ``go mod edit``.
+
+    Applies ``-require`` for every non-removed dep and ``-droprequire`` for
+    removed ones in a single invocation. ``go mod edit`` is offline and leaves
+    go.sum (and ``module``/``go``/``replace`` directives) untouched.
+
+    Returns True on success, False otherwise.
+    """
+    go_mod_path = project_dir / "go.mod"
+    if not go_mod_path.exists():
+        return False
+
+    try:
+        from google.agents.cli._runner import run_resolved
+        from google.agents.cli._tools import ToolNotFoundError
+
+        ordered = sorted(resolutions, key=lambda r: r.name)
+        # full_name() is the module@version token that ``go mod edit -require``
+        # expects.
+        edit_args = [f"-droprequire={r.name}" for r in ordered if r.status == "removed"]
+        edit_args += [
+            f"-require={r.full_name()}" for r in ordered if r.status != "removed"
+        ]
+
+        if not edit_args:
+            return True
+
+        result = run_resolved(
+            ["go", "mod", "edit", *edit_args, str(go_mod_path)],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logging.warning(f"go mod edit failed: {result.stderr}")
+            return False
+        return True
+    # run_resolved raises ToolNotFoundError if the executable is not found
+    except ToolNotFoundError:
+        logging.warning("go not found — cannot write merged go.mod dependencies")
+        return False
+    except Exception as e:
+        logging.warning(f"Could not write dependencies to {go_mod_path}: {e}")
+        return False
+
+
+# Per-language dependency handlers; both take a project directory. None = not
+# supported for that language yet.
+MERGE_DEPENDENCY_HANDLERS: dict[str, Callable | None] = {
+    "python": merge_python_dependencies,
+    "go": merge_go_dependencies,
+    "java": None,
+    "typescript": None,
+}
+
+WRITE_DEPENDENCY_HANDLERS: dict[str, Callable | None] = {
+    "python": write_python_dependencies,
+    "go": write_go_dependencies,
+    "java": None,
+    "typescript": None,
+}
+
+
 def update_acli_metadata(
     project_dir: pathlib.Path,
-    create_params: dict[str, str],
+    create_params: dict[str, Any],
+    *,
     acli_version: str | None = None,
-    language: str = "python",
     remove_keys: list[str] | None = None,
-) -> bool:
+    base_template: str | None = None,
+) -> None:
     """Update specific keys in the unified agents-cli-manifest.yaml metadata file.
+
+    A manifest that cannot be read or written is logged and skipped: every
+    caller writes metadata as a side effect of work that already succeeded.
 
     Args:
         project_dir: Path to the project directory
         create_params: Dict of keys to update inside create_params
         acli_version: If provided, update acli_version
-        language: Project language (unused now as config file is fixed)
         remove_keys: List of keys to remove from create_params section
-
-    Returns:
-        True if successful, False otherwise
+        base_template: If provided, record it at the manifest top level
     """
     manifest_path = project_dir / "agents-cli-manifest.yaml"
     if not manifest_path.exists():
         logging.warning(f"Manifest not found: {manifest_path}")
-        return False
+        return
 
     try:
         with open(manifest_path, encoding="utf-8") as f:
@@ -580,6 +735,9 @@ def update_acli_metadata(
 
         if acli_version:
             data["acli_version"] = acli_version
+
+        if base_template is not None:
+            data["base_template"] = base_template
 
         if "create_params" not in data or not isinstance(data["create_params"], dict):
             data["create_params"] = {}
@@ -595,10 +753,8 @@ def update_acli_metadata(
 
         with open(manifest_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        return True
     except Exception as e:
         logging.warning(f"Could not update ACLI metadata in {manifest_path}: {e}")
-        return False
 
 
 def migrate_legacy_python_config(

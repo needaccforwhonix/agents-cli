@@ -110,7 +110,7 @@ resource "google_cloud_run_v2_service" "app" {
   deletion_protection = false
   ingress             = "INGRESS_TRAFFIC_ALL"
   labels = {
-    "created-by"                  = "adk"
+    "created-by"                  = "agents-cli"
 {%- if cookiecutter.agent_garden %}
     "deployed-with"               = "agent-garden"
 {%- if cookiecutter.agent_sample_id %}
@@ -209,8 +209,38 @@ resource "google_cloud_run_v2_service" "app" {
 {%- endif %}
 
       env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "{{cookiecutter.project_name}}"
+      }
+
+      env {
         name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
         value = "NO_CONTENT"
+      }
+
+      env {
+        name  = "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"
+        value = "false"
+      }
+
+      env {
+        name  = "OTEL_SEMCONV_STABILITY_OPT_IN"
+        value = "gen_ai_latest_experimental"
+      }
+
+      env {
+        name  = "OTEL_INSTRUMENTATION_GENAI_UPLOAD_FORMAT"
+        value = "jsonl"
+      }
+
+      env {
+        name  = "OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK"
+        value = "upload"
+      }
+
+      env {
+        name  = "OTEL_INSTRUMENTATION_GENAI_UPLOAD_BASE_PATH"
+        value = "gs://${google_storage_bucket.logs_data_bucket[each.value].name}/completions"
       }
     }
 

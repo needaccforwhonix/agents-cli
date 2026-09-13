@@ -116,7 +116,7 @@ Index Google Chat, email, design documents, and meeting notes for decision recor
 Build a RAG agent that indexes Google Chat, email, and design docs nightly. Surface past decisions when someone proposes something we've already discussed.
 ```
 
-RAG is a clone-and-study recipe — see [Agent Templates](templates.md#rag-retrieval-augmented-generation) for the samples to adapt.
+RAG is a clone-and-study recipe — see [Extending the starter agent](development.md#extending-the-starter-agent) for the samples to adapt.
 
 ### Institutional Memory Navigator
 
@@ -178,7 +178,7 @@ Run specialist agents in parallel during an outage: one bisects recent changes, 
 Build an A2A multi-agent system for incident response. Specialists for bisection, error correlation, past-incident lookup, and customer comms — coordinated in parallel.
 ```
 
-The [`adk` template](templates.md) (A2A built in) exposes the A2A protocol. Each specialist runs as a service, and the coordinator orchestrates execution.
+The `adk` template exposes the A2A protocol out of the box. Each specialist runs as a service, and the coordinator orchestrates execution.
 
 ### Distributed Code Migration
 
@@ -196,6 +196,6 @@ Build A2A specialist agents for a large framework migration: data models, API co
 
 - [Tutorial: Build Your First Agent](quickstart-tutorial.md) — build, evaluate, and deploy with your coding agent
 - [Project Structure](project-structure.md) — understand what each generated file does
-- [Agent Templates](templates.md) — the `adk` template and the RAG clone-and-study recipe
+- [Extending the starter agent](development.md#extending-the-starter-agent) — the recipes your coding agent studies to add capabilities
 - [Development Guide](development.md) — full development workflow
 - [CLI Reference](../cli/index.md) — all commands and flags

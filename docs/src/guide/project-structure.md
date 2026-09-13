@@ -13,11 +13,10 @@ my-agent/
 ├── app/                          # Your agent code
 │   ├── __init__.py               # Registers the app (exports `app`)
 │   ├── agent.py                  # Agent definition — instructions, model, tools
-│   └── app_utils/                # Utilities (telemetry, converters)
-│       ├── __init__.py
-│       ├── telemetry.py          # OpenTelemetry setup for Cloud Trace
-│       ├── typing.py             # Request/response Pydantic models
-│       └── gcs.py                # GCS utility functions
+│   ├── fast_api_app.py           # FastAPI server — telemetry setup, A2A routes
+│   └── app_utils/                # Utilities
+│       ├── services.py           # Shared session & artifact services
+│       └── a2a.py                # A2A route wiring
 │
 ├── tests/
 │   ├── eval/                     # Evaluation test cases
@@ -51,6 +50,8 @@ from google.adk.apps import App
 from google.adk.models import Gemini
 from google.genai import types
 
+MODEL = "gemini-3.7-flash"
+
 
 def get_weather(query: str) -> str:
     """Simulates a web search. Use it get information on weather."""
@@ -68,7 +69,7 @@ def get_current_time(query: str) -> str:
 root_agent = Agent(
     name="root_agent",
     model=Gemini(
-        model="gemini-flash-latest",
+        model=MODEL,
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="You are a helpful AI assistant.",
@@ -86,7 +87,7 @@ The four key parts:
 1. **Tool functions** — plain Python functions with docstrings. The docstring tells the LLM when to use the tool.
 2. **`Agent`** — combines a model, instruction (system prompt), and tools.
 3. **`App`** — wraps the agent for serving. The `name` must match the directory name (`app`).
-4. **Model** — defaults to `gemini-flash-latest`. Change it in the `Gemini()` constructor.
+4. **Model** — defaults to `gemini-3.7-flash`. Change it via the `MODEL` constant at the top of `agent.py`.
 
 ### `pyproject.toml`
 

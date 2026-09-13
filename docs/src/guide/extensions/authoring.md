@@ -1,0 +1,53 @@
+# Authoring Extensions
+
+The quickest path is ad-hoc: drop a single `agents-cli-extension.yaml` at your project root (next to `agents-cli-manifest.yaml`). It's **auto-loaded** at project scope — no `extension add` needed. Commit it, and teammates and CI get the same overrides. To share it across repos later, move the same file into its own git repo and `extension add` it — the schema doesn't change.
+
+!!! warning "Auto-loaded extensions run with the repo's trust"
+    A project-root `agents-cli-extension.yaml` executes its own local code the first time you run an overridden command — with no trust prompt, because you're trusted to run code in a repo you've opened. Treat it like any other code in the repo: review it before running `agents-cli` commands in an untrusted checkout. Each invocation logs which extension took over the command as the compensating control.
+
+---
+
+## Schema (`agents-cli-extension/v1alpha1`)
+
+```yaml
+schema: agents-cli-extension/v1alpha1
+name: my-extension
+description: What this extension does.
+requires:                 # optional: the agents-cli range this extension supports
+  agents_cli: ">=1.1,<2"  # optional; omitted means no constraint
+  on_incompatible: warn   # warn (install + warn) | error (refuse at add/update)
+
+commands:
+  override:               # replace a built-in; user argv passes through verbatim
+    deploy:
+      run: ["uv", "run", "scripts/custom_deploy.py"]
+      description: SBOM upload, then the built-in deploy.
+    eval.generate:        # dotted name = a subcommand (group.sub)
+      run: ["uv", "run", "scripts/eval_generate.py"]
+      description: Framework-specific inference runner.
+  add:                    # a brand-new command that doesn't exist yet
+    compliance-report:
+      run: ["bash", "scripts/compliance_report.sh"]
+      description: Generate the quarterly compliance report.
+```
+
+---
+
+## Rules that matter
+
+- **`run:` is a command vector** executed with **no shell**; your argv is appended verbatim. Relative paths resolve against the extension directory, and `$AGENTS_CLI_EXTENSION_DIR` locates sibling scripts and templates.
+- **You can't override a top-level command *group*** (e.g. `eval`) — override a specific subcommand (`eval.generate`). Peers like `eval grade` keep their built-in behavior.
+- **Re-invoke the built-in safely.** An override runs with `AGENTS_CLI_DISABLE_OVERRIDES=1` set, so calling `agents-cli deploy` inside your wrapper hits the built-in — no infinite recursion.
+- **Chaining lives in a wrapper script**, since `run:` is a single vector, not a shell line. Point `run:` at a script that sequences the steps (check, then `agents-cli deploy "$@"`).
+- **`name` is a single path component** matching `[A-Za-z0-9._-]+` (it becomes a directory under `extensions/`); slashes, `.`, and `..` are rejected.
+- **Conflicts** (same scope, surfaced in `agents-cli extension list` and `agents-cli info`): two extensions claiming one command is first-wins, and the later one is ignored. Cross-scope is not a conflict — project wins over user (`--global`).
+- **Ship your own agent** as a template built on the `empty_py` base — shared project scaffolding (infra + deps, no `app/`, no ADK) you drop your own `app/` onto, keeping the `app.fast_api_app:app` entrypoint so deploy is unchanged. Put an `agents-cli-extension.yaml` at the template root and users get its overrides by scaffolding from it, with nothing installed. The [LangChain template](first-party.md#langchain) is the worked example.
+- **A root `AGENTS.md` in your template becomes the project's coding-agent guide**, written under whatever the project calls it (`GEMINI.md` by default, or `--agent-guidance-filename`), so it replaces the base guide instead of landing beside it. Keep it to what differs; the rest belongs in the skill your template ships.
+- **Commit a `uv.lock` in your template.** It is copied into the project as-is, so without one two scaffolds a week apart resolve differently, and so do two Docker builds of the same commit.
+- **List every deployment target you support**, including `none`, in your template's `.template/templateconfig.yaml` under `settings.deployment_targets`. The CLI enforces that list, and `--prototype` resolves to `none`, so a template that omits it cannot be scaffolded in prototype mode.
+
+---
+
+## Compatibility
+
+Upgrades are safe by design: the command surface stays backward-compatible within a major (`1.x`; breaking changes wait for `2.0`), the extension schema is additive-only within `agents-cli-extension/v1alpha1`, and your extension runs its own SHA-pinned code, so a CLI upgrade never silently changes it.

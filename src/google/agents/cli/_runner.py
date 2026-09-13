@@ -19,11 +19,18 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import click
 
 from google.agents.cli import _tools
+
+# Set for an extension's command so any re-entry into `agents-cli <cmd>` runs the
+# built-in instead of recursing back into the override.
+DISABLE_OVERRIDES_ENV = "AGENTS_CLI_DISABLE_OVERRIDES"
+# Exported so an extension's scripts can find sibling resources (templates etc.).
+EXTENSION_DIR_ENV = "AGENTS_CLI_EXTENSION_DIR"
 
 
 def redact_cmd(args: list[str]) -> str:
@@ -171,6 +178,48 @@ def run(
         raise click.ClickException(f"{error_msg} (exit code {result.returncode}){detail}")
 
     return result
+
+
+def _looks_like_path(token: str) -> bool:
+    """A `run:` token the author wrote as a path, e.g. `scripts/run.py`."""
+    return "/" in token or os.sep in token
+
+
+def run_extension_command(
+    run_vector: Sequence[str],
+    extra_args: list[str],
+    *,
+    cwd: Path,
+    extension_root: Path,
+) -> int:
+    """Run an extension's declared `run:` vector with the user's argv appended.
+
+    Differs from `run` in ways an override needs: the vector is extension-supplied
+    and passed through verbatim (no `require_tool` resolution), the command is
+    not echoed, and the child's exit code is returned rather than raised, so the
+    override exits like the command it replaced.
+
+    Tokens that exist as paths under `extension_root` are made absolute, so a
+    vendored script is found regardless of cwd.
+    """
+    # Only tokens written as paths. Resolving every token would rewrite an
+    # ordinary argument that happens to name a file in the extension, e.g.
+    # `run: ["make", "build"]` in an extension that also ships `build/`.
+    resolved_vector = [
+        str((extension_root / tok).resolve())
+        if _looks_like_path(tok) and (extension_root / tok).exists()
+        else tok
+        for tok in run_vector
+    ]
+    result = run(
+        resolved_vector + list(extra_args),
+        cwd=cwd,
+        env={DISABLE_OVERRIDES_ENV: "1", EXTENSION_DIR_ENV: str(extension_root)},
+        print_cmd=False,
+        check=False,
+        resolve_executable=False,
+    )
+    return result.returncode
 
 
 def run_resolved(

@@ -144,6 +144,10 @@ dmypy.json
 .terraform*
 .Terraform*
 
+# Terraform state.
+*.tfstate
+*.tfstate.*
+
 
 tmp*
 
@@ -189,9 +193,11 @@ testem.log
 .DS_Store
 Thumbs.db
 *.vscode*
-
+{% if 'adk' in cookiecutter.tags %}
 # ADK
 .adk/
+
+{% endif -%}
 
 # Starter pack specific
 .env

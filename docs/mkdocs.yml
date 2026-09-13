@@ -100,7 +100,11 @@ nav:
     - Development:
       - Development Guide: guide/development.md
       - Project Structure: guide/project-structure.md
-      - Agent Templates: guide/templates.md
+      - Extensions:
+        - Overview: guide/extensions/index.md
+        - Using Extensions: guide/extensions/using.md
+        - Authoring Extensions: guide/extensions/authoring.md
+        - First-party frameworks: guide/extensions/first-party.md
     - Evaluation:
       - Evaluation Guide: guide/evaluation.md
     - Deployment & Operations:
@@ -109,7 +113,7 @@ nav:
       - Observability:
         - Overview: guide/observability/index.md
         - Cloud Trace: guide/observability/cloud-trace.md
-        - BigQuery Plugin: guide/observability/bq-agent-analytics.md
+        - BigQuery Analytics Plugin: guide/observability/bq-agent-analytics.md
   - Reference:
     - reference/index.md
     - CLI: cli/index.md

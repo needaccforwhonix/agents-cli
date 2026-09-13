@@ -20,7 +20,8 @@ import pathlib
 import shutil
 
 import click
-from rich.console import Console
+
+from google.agents.cli._output import Console
 
 BACKUP_BASE_DIR = pathlib.Path.home() / ".agents-cli" / "backups"
 

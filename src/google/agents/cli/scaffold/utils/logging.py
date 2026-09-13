@@ -15,7 +15,7 @@
 import importlib.metadata
 import random
 
-from rich.console import Console
+from google.agents.cli._output import Console
 
 console = Console()
 

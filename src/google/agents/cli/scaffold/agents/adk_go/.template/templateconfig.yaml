@@ -22,4 +22,3 @@ settings:
   extra_dependencies: []
   tags: ["adk", "go", "a2a"]
   frontend_type: "None"
-  agent_directory: "agent"

@@ -27,18 +27,19 @@ import shutil
 import tempfile
 from collections.abc import Callable
 
-from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
 
-from .language import get_language_config
+from google.agents.cli._output import Console
+
 from .upgrade import (
-    DependencyChange,
+    MERGE_DEPENDENCY_HANDLERS,
+    WRITE_DEPENDENCY_HANDLERS,
+    DependencyReadError,
+    DependencyResolution,
     FileCompareResult,
     compare_all_files,
     group_results_by_action,
-    merge_pyproject_dependencies,
-    write_merged_dependencies,
 )
 
 console = Console()
@@ -80,7 +81,10 @@ def _run_vendored_create(
 
     cli_args = [project_name]
     cli_args.extend(["--output-dir", str(output_dir)])
-    cli_args.extend(["--auto-approve", "--skip-deps", "--skip-checks"])
+    # This runs in-process, so its output lands in the user's terminal.
+    # --quiet keeps it silent. The pinned path deliberately does not pass it:
+    # older published releases would reject it, and uvx output is captured.
+    cli_args.extend(["--auto-approve", "--skip-deps", "--skip-checks", "--quiet"])
     cli_args.extend(args)
 
     logging.debug(f"Running vendored create command with args: {cli_args}")
@@ -116,7 +120,10 @@ def _run_pinned_create(
     project_name: str,
     version: str,
 ) -> bool:
-    """Generate the snapshot via ``uvx google-agents-cli@<version> scaffold create``."""
+    """Generate the snapshot via ``uvx google-agents-cli@<version> scaffold create``.
+
+    Returns true if the snapshot was generated, false otherwise.
+    """
     from google.agents.cli._runner import run_resolved
 
     from .version import PACKAGE_NAME
@@ -209,13 +216,10 @@ def run_create_command(
 
 def display_results(
     groups: dict[str, list[FileCompareResult]],
-    dep_changes: list[DependencyChange] | None = None,
+    dep_resolutions: list[DependencyResolution],
     dry_run: bool = False,
 ) -> None:
     """Display the comparison results grouped by action."""
-    if dep_changes is None:
-        dep_changes = []
-
     if groups["auto_update"]:
         console.print("[bold green]Will auto-update (unchanged by you):[/bold green]")
         for result in groups["auto_update"]:
@@ -260,21 +264,23 @@ def display_results(
             console.print("[dim]  You'll be prompted to resolve each conflict.[/dim]")
         console.print()
 
-    if dep_changes:
+    # Only show deps that actually changed, not unchanged ones.
+    changed = [r for r in dep_resolutions if r.status != "unchanged"]
+    if changed:
         console.print("[bold]Dependency changes:[/bold]")
-        for change in dep_changes:
-            dep_name = escape(change.name)
-            old_ver = escape(change.old_version or "")
-            new_ver = escape(change.new_version or "")
-            if change.change_type == "updated":
+        for resolution in changed:
+            dep_name = escape(resolution.name)
+            old_ver = escape(resolution.old_version or "")
+            new_ver = escape(resolution.new_version or "")
+            if resolution.status == "updated":
                 console.print(
                     f"  [green]✓[/green] Update: {dep_name} {old_ver} → {new_ver}"
                 )
-            elif change.change_type == "added":
+            elif resolution.status == "added":
                 console.print(f"  [green]+[/green] Add: {dep_name}{new_ver}")
-            elif change.change_type == "kept":
+            elif resolution.status == "kept":
                 console.print(f"  [cyan]✓[/cyan] Keep (yours): {dep_name}{old_ver}")
-            elif change.change_type == "removed":
+            elif resolution.status == "removed":
                 console.print(f"  [yellow]-[/yellow] Remove: {dep_name}{old_ver}")
         console.print()
 
@@ -566,19 +572,36 @@ def run_three_way_merge(
         groups = group_results_by_action(results)
 
         # ── Dependency merging ───────────────────────────────────────
-        lang_config = get_language_config(language)
-        dep_result = None
-        if lang_config.get("strip_dependencies", True):
-            dep_result = merge_pyproject_dependencies(
-                project_dir / "pyproject.toml",
-                old_template_project / "pyproject.toml",
-                new_template_project / "pyproject.toml",
+        dep_resolutions: list[DependencyResolution] = []
+        merge_dependencies = MERGE_DEPENDENCY_HANDLERS.get(language)
+        if merge_dependencies is None:
+            # Warn rather than silently leaving the manifest untouched
+            # (java/typescript, etc.).
+            logging.warning(
+                "Dependency merging isn't supported for %s projects yet — your "
+                "dependency manifest was left unchanged. Review it manually "
+                "after the %s.",
+                language,
+                operation_label,
             )
+        else:
+            try:
+                dep_resolutions = merge_dependencies(
+                    project_dir, old_template_project, new_template_project
+                )
+            except DependencyReadError as e:
+                # Skip rather than dropping every requirement into a destructive diff.
+                logging.warning(
+                    "Skipping dependency merge — %s. Review your dependency manifest "
+                    "manually after the %s.",
+                    e,
+                    operation_label,
+                )
 
         console.print()
 
         # ── Display ──────────────────────────────────────────────────
-        display_results(groups, dep_result.changes if dep_result else [], dry_run)
+        display_results(groups, dep_resolutions, dry_run)
 
         total_changes = (
             len(groups["auto_update"])
@@ -586,9 +609,9 @@ def run_three_way_merge(
             + len(groups["removed"])
             + len(groups["conflict"])
         )
-        has_dep_changes = dep_result and dep_result.changes
+        has_dep_changes = any(r.status != "unchanged" for r in dep_resolutions)
         if total_changes == 0 and not has_dep_changes:
-            console.print("[bold green]\u2705[/bold green] No changes needed!")
+            console.print("[bold green]✅[/bold green] No changes needed!")
             return True
 
         # ── Confirm ──────────────────────────────────────────────────
@@ -624,10 +647,16 @@ def run_three_way_merge(
             interactive=interactive,
         )
 
-        if not dry_run and dep_result and dep_result.changes:
-            write_merged_dependencies(
-                project_dir / "pyproject.toml",
-                dep_result.merged_deps,
+        write_dependencies = WRITE_DEPENDENCY_HANDLERS.get(language)
+        if (
+            not dry_run
+            and has_dep_changes
+            and write_dependencies is not None
+            and write_dependencies(project_dir, dep_resolutions)
+        ):
+            console.print(
+                "[dim] Dependencies updated — run [bold]agents-cli install[/bold] "
+                "to install the new versions.[/dim]"
             )
 
         # ── Post-apply hook (e.g. metadata update) ───────────────────
@@ -652,7 +681,7 @@ def run_three_way_merge(
                 )
             console.print()
             console.print(
-                f"[bold green]\u2705 {operation_label.capitalize()} complete![/bold green]"
+                f"[bold green]✅ {operation_label.capitalize()} complete![/bold green]"
             )
 
         return True

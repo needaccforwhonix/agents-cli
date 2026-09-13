@@ -21,7 +21,8 @@ from pathlib import Path
 
 import requests
 from packaging import version as pkg_version
-from rich.console import Console
+
+from google.agents.cli._output import Console
 
 console = Console()
 

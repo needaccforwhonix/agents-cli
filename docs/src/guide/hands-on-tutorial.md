@@ -62,7 +62,7 @@ The important file is `app/agent.py`. Open it and you'll see two tool functions 
 ```python title="app/agent.py"
 root_agent = Agent(
     name="root_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(model="gemini-3.7-flash"),
     instruction="You are a helpful AI assistant designed to provide accurate and useful information.",
     tools=[get_weather, get_current_time],
 )
@@ -111,7 +111,7 @@ Let's give the agent a personality. Open `app/agent.py` and change the instructi
 root_agent = Agent(
     name="root_agent",
     model=Gemini(
-        model="gemini-flash-latest",
+        model="gemini-3.7-flash",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a cheerful weather reporter who speaks in short, 
@@ -187,8 +187,7 @@ Each eval case defines a user message. The evaluation system sends the message t
 Run it:
 
 ```bash
-agents-cli eval generate
-agents-cli eval grade
+agents-cli eval run
 ```
 
 The output shows scores for each eval case against the configured metrics.
@@ -249,7 +248,7 @@ See the [Observability Guide](observability/index.md) for verification steps, fu
 | `agents-cli playground` | Started the ADK playground for interactive testing |
 | `agents-cli run "..."` | Tested the agent from the terminal |
 | Edited `agent.py` | Customized the persona and added a tool |
-| `agents-cli eval generate` followed by `agents-cli eval grade` | Validated agent behavior with structured evaluations |
+| `agents-cli eval run` | Validated agent behavior with structured evaluations |
 | `agents-cli deploy` | Deployed the agent to Google Cloud |
 | Trace explorer + content logs | Verified tracing and set up prompt-response logging |
 

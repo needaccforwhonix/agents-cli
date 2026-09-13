@@ -14,6 +14,7 @@
 
 
 from google.agents.cli._project import ProjectConfig
+from google.agents.cli.scaffold.utils import remote_template
 
 
 def metadata_to_cli_args(
@@ -29,13 +30,23 @@ def metadata_to_cli_args(
     args: list[str] = []
 
     if metadata.base_template:
-        arg_name = "--base-template" if for_enhance else "--agent"
-        args.extend([arg_name, metadata.base_template])
+        is_spec = remote_template.is_template_spec(metadata.base_template)
+        if not for_enhance:
+            args.extend(["--agent", metadata.base_template])
+        elif is_spec:
+            # A spec goes in `enhance`'s positional argument, which is what it
+            # fetches. --base-template only names a template inside the wheel, so
+            # a spec there resolves to `agents/<org>/<repo>@<tag>` and is not found.
+            args.append(metadata.base_template)
+        else:
+            args.extend(["--base-template", metadata.base_template])
 
     if metadata.agent_directory and metadata.agent_directory != "app":
         args.extend(["--agent-directory", metadata.agent_directory])
 
-    # Skip is_a2a - not currently a valid option on `create`, despite being grouped that way in config
+    # Both are recorded by the template rather than chosen by the user: is_a2a
+    # is derived from tags and framework comes from templateconfig, and `create`
+    # has no flag for either. A re-render reads them from the template again.
     skip_keys = {"is_a2a"}
     for key, value in metadata.create_params.items():
         if key in skip_keys:

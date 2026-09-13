@@ -17,11 +17,11 @@
 import re
 
 import click
-from rich.console import Console
+from agentplatform._genai._evals_constant import SUPPORTED_PREDEFINED_METRICS
 from rich.table import Table
-from vertexai._genai._evals_constant import SUPPORTED_PREDEFINED_METRICS
 
 from google.agents.cli._click import LazyGroup
+from google.agents.cli._output import Console
 
 
 @click.group("metric", cls=LazyGroup)

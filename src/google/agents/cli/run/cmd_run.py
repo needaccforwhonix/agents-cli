@@ -19,52 +19,49 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import mimetypes
-import re
 import uuid
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlparse
 
 import click
 import httpx
 import requests
-from a2a.client import ClientConfig, ClientFactory
-from a2a.types import (
-    AgentCard,
-    FilePart,
-    FileWithBytes,
-    FileWithUri,
-    Message,
-    Part,
-    Role,
-    TaskArtifactUpdateEvent,
-    TextPart,
+from a2a.client import ClientConfig, create_client
+from a2a.types import Message, Part, Role, SendMessageRequest
+from a2a.utils.constants import (
+    AGENT_CARD_WELL_KNOWN_PATH,
+    PROTOCOL_VERSION_1_0,
+    VERSION_HEADER,
     TransportProtocol,
 )
-from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+from google.protobuf.json_format import MessageToDict
 
-from google.agents.cli._agent_runtime_a2a import (
-    build_agent_runtime_a2a_base_url,
-    build_agent_runtime_a2a_card_url,
-)
+from google.agents.cli._adk_client import create_session, run_sse
 from google.agents.cli._project import (
     chdir_project_root,
     read_project_config,
     require_agent_directory,
 )
-from google.agents.cli.auth import get_access_token, get_id_token
-from google.agents.cli.run._local_server import ensure_server, stop_server
+from google.agents.cli._remote import (
+    build_agent_runtime_passthrough_url,
+    build_remote_headers,
+    is_legacy_agent_runtime_url,
+    parse_agent_runtime_service_url,
+    validate_agent_runtime_url,
+)
+from google.agents.cli.run._local_server import (
+    api_base_path,
+    ensure_server,
+    stop_server,
+)
 from google.agents.cli.run._multimodal import (
     build_a2a_parts,
     build_adk_sse_parts,
     build_agent_runtime_message,
 )
 
-_AGENT_ENGINE_URL_FRAGMENT = "aiplatform.googleapis.com"
-_REASONING_ENGINE_PATH = "reasoningEngines"
-# A valid Agent Runtime host carries a location prefix: <location>-aiplatform.googleapis.com
-_AGENT_RUNTIME_HOST_RE = re.compile(rf".+-{re.escape(_AGENT_ENGINE_URL_FRAGMENT)}$")
 _ARTIFACTS_DIR = Path(".google-agents-cli") / "artifacts"
 
 
@@ -100,7 +97,7 @@ def _resolve_dispatch_target(
             raise click.UsageError(
                 "--mode is required when using --url. Choose from: a2a, adk"
             )
-        _validate_agent_runtime_url(url)
+        validate_agent_runtime_url(url)
         if app_name:
             resolved = app_name
         else:
@@ -110,7 +107,7 @@ def _resolve_dispatch_target(
             resolved = cfg.agent_directory
         return _DispatchTarget(
             service_url=url,
-            headers=_build_remote_headers(custom_headers, url),
+            headers=build_remote_headers(custom_headers, url),
             mode=mode,
             app_name=resolved,
         )
@@ -118,9 +115,15 @@ def _resolve_dispatch_target(
     chdir_project_root()
     cfg = read_project_config()
     require_agent_directory(cfg)
-    server = ensure_server(Path.cwd(), cfg.agent_directory, trace_to_cloud=trace_to_cloud)
+    server = ensure_server(
+        Path.cwd(),
+        cfg.agent_directory,
+        language=cfg.language,
+        trace_to_cloud=trace_to_cloud,
+    )
+    base_path = api_base_path(cfg.language)
     return _DispatchTarget(
-        service_url=f"http://127.0.0.1:{server.port}",
+        service_url=f"http://127.0.0.1:{server.port}{base_path}",
         headers={},
         mode="adk",
         app_name=app_name or cfg.agent_directory,
@@ -136,50 +139,6 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
     if stop_server(Path.cwd()):
         ctx.exit(0)
     raise click.ClickException("No local server is running.")
-
-
-def _parse_header(value: str) -> tuple[str, str]:
-    """Parse a ``Key: Value`` header string."""
-    if ":" not in value:
-        raise click.BadParameter(
-            f"Invalid header format (expected 'Key: Value'): {value}"
-        )
-    key, _, val = value.partition(":")
-    return key.strip(), val.strip()
-
-
-def _build_remote_headers(
-    custom_headers: tuple[str, ...], url: str = ""
-) -> dict[str, str]:
-    """Build headers for remote requests.
-
-    Auto-detects Google Cloud credentials unless the caller supplies
-    an ``Authorization`` header via ``--header``.
-
-    Uses an **access token** for Vertex AI / Agent Runtime URLs and an
-    **identity token** (with the service URL as audience) for everything
-    else (Cloud Run, GKE, etc.).
-    """
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    parsed = dict(_parse_header(h) for h in custom_headers)
-
-    if "Authorization" not in parsed:
-        try:
-            if _is_agent_runtime_url(url):
-                token = get_access_token()
-            else:
-                parsed_url = urlparse(url)
-                audience = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                token = get_id_token(audience)
-            headers["Authorization"] = f"Bearer {token}"
-        except Exception as exc:
-            click.echo(
-                f"Warning: Could not obtain credentials: {exc}",
-                err=True,
-            )
-
-    headers.update(parsed)
-    return headers
 
 
 @click.command("run")
@@ -253,13 +212,20 @@ def _build_remote_headers(
     help="Stop the local background server and exit.",
 )
 @click.option(
-    "--trace-to-cloud",
+    "--otel-to-cloud",
     is_flag=True,
     default=False,
     help=(
-        "Export traces to Google Cloud Trace. "
+        "Export OpenTelemetry traces/logs to Google Cloud. "
         "Takes effect when the local server starts; ignored with --url."
     ),
+)
+# TODO: b/533949139
+@click.option(
+    "--trace-to-cloud",
+    is_flag=True,
+    default=False,
+    hidden=True,
 )
 @click.option(
     "--verbose",
@@ -278,6 +244,7 @@ def cmd_run(
     session_id: str | None,
     custom_headers: tuple[str, ...],
     start_server: bool,
+    otel_to_cloud: bool,
     trace_to_cloud: bool,
     verbose: bool,
 ):
@@ -319,9 +286,16 @@ def cmd_run(
             fg="yellow",
             err=True,
         )
-    if url and trace_to_cloud:
+    # TODO: b/533949139
+    if trace_to_cloud:
+        logging.warning(
+            "--trace-to-cloud is deprecated and will be removed in a future "
+            "release. Use --otel-to-cloud instead."
+        )
+    export_otel = otel_to_cloud or trace_to_cloud
+    if url and export_otel:
         click.secho(
-            "Warning: --trace-to-cloud has no effect when using --url.",
+            "Warning: --otel-to-cloud has no effect when using --url.",
             fg="yellow",
             err=True,
         )
@@ -331,7 +305,7 @@ def cmd_run(
         mode=mode,
         app_name=app_name,
         custom_headers=custom_headers,
-        trace_to_cloud=trace_to_cloud,
+        trace_to_cloud=export_otel,
     )
     if url:
         click.echo(f"Querying remote agent: {url} (mode: {target.mode})")
@@ -371,58 +345,6 @@ def cmd_run(
             stop_server(Path.cwd())
 
 
-def _is_agent_runtime_url(url: str) -> bool:
-    """Return ``True`` if *url* points to an Agent Runtime endpoint."""
-    return _AGENT_ENGINE_URL_FRAGMENT in url and _REASONING_ENGINE_PATH in url
-
-
-def _validate_agent_runtime_url(url: str) -> None:
-    """Raise a helpful hint when *url* references an Agent Runtime resource but
-    its host is missing the required ``<location>-`` location prefix.
-
-    Agent Runtime endpoints are hosted at ``<location>-aiplatform.googleapis.com``.
-    A bare resource path (no host) or a host without the location prefix can't be
-    queried, so we point at the correct format instead of failing obscurely.
-    """
-    if _REASONING_ENGINE_PATH not in url:
-        return
-    if _AGENT_RUNTIME_HOST_RE.match(urlparse(url).hostname or ""):
-        return  # Host already carries a <location>- prefix.
-    raise click.UsageError(
-        "Detected an Agent Runtime URL with a missing location.\n"
-        "  The location must appear in the host. The correct format is:\n"
-        "    https://<LOCATION>-aiplatform.googleapis.com/v1/projects/<PROJECT>"
-        "/locations/<LOCATION>/reasoningEngines/<ID>"
-    )
-
-
-def _is_raw_agent_runtime_url(url: str) -> bool:
-    """``True`` for a bare Agent Runtime resource URL that still needs its
-    ``/api`` passthrough path built.
-
-    A URL already containing ``/api`` (the deployed APP_URL form served by the
-    container) or any non-Agent-Runtime URL returns ``False`` — those are used
-    as-is with ``/a2a/<app>`` (a2a) or ``/run_sse`` (adk) appended.
-    """
-    return _is_agent_runtime_url(url) and "/api" not in url
-
-
-def _parse_agent_runtime_service_url(service_url: str) -> tuple[str, str]:
-    """Split an Agent Runtime service URL into (location, runtime_resource).
-
-    Handles both the ``/v1/`` and ``/v1beta1/`` API path variants.
-    ``https://europe-west1-aiplatform.googleapis.com/v1/projects/123/locations/
-    europe-west1/reasoningEngines/456`` →
-    ``("europe-west1", "projects/123/locations/europe-west1/reasoningEngines/456")``.
-    """
-    host = urlparse(service_url).hostname or ""
-    location = host.split(f"-{_AGENT_ENGINE_URL_FRAGMENT}", 1)[0]
-    # Resource path follows the API version segment (v1, v1beta1, ...).
-    match = re.search(r"/v1[^/]*/(.+)", service_url)
-    runtime_resource = match.group(1) if match else service_url
-    return location, runtime_resource
-
-
 def _dispatch_query(
     service_url: str,
     message: str,
@@ -441,35 +363,39 @@ def _dispatch_query(
     URL, auth headers) flows so the two paths can't drift.
 
     Modes:
-      - ``a2a``: A2A protocol.  If the URL points to Agent Runtime,
-        automatically constructs the ``/a2a`` sub-path; otherwise
-        appends ``/a2a/{app_name}``.
-      - ``adk``: ADK SSE.  Uses ``:streamQuery`` for Agent Runtime
+      - ``a2a``: A2A protocol.
+        If the URL points to legacy Agent Runtime, automatically constructs the passthrough URL
+        which is used as the base URL for A2A queries (legacy A2A on Reasoning Engine is not supported).
+
+        The remote agent's card location can't be known from a bare ``--url``,
+        so both known layouts are probed: ``/a2a/{app_name}`` (Python ADK, which
+        namespaces multiple agents) then the base root (Go and the A2A spec's
+        canonical location).
+      - ``adk``: ADK SSE.  Uses ``:streamQuery`` for legacy Agent Runtime
         URLs, ``/run_sse`` for everything else.
     """
     if mode == "a2a":
-        if _is_raw_agent_runtime_url(service_url):
-            location, runtime_resource = _parse_agent_runtime_service_url(service_url)
-            a2a_base = build_agent_runtime_a2a_base_url(
-                location, runtime_resource, app_name
-            )
-            card_url = build_agent_runtime_a2a_card_url(
-                location, runtime_resource, app_name
-            )
-        else:
-            a2a_base = f"{service_url}/a2a/{app_name}"
-            card_url = f"{a2a_base}{AGENT_CARD_WELL_KNOWN_PATH}"
+        if is_legacy_agent_runtime_url(service_url):
+            location, runtime_resource = parse_agent_runtime_service_url(service_url)
+            service_url = build_agent_runtime_passthrough_url(location, runtime_resource)
+
+        # Probe the namespaced Python path first (when we have an app name),
+        # then fall back to the root card served by Go and the A2A spec.
+        a2a_bases = []
+        if app_name:
+            a2a_bases.append(f"{service_url}/a2a/{app_name}")
+        a2a_bases.append(service_url)
+
         _query_a2a(
-            card_url=card_url,
+            a2a_bases=a2a_bases,
             parts=build_a2a_parts(message, files),
             headers=headers,
-            url=a2a_base,
             session_id=session_id,
             verbose=verbose,
         )
     elif mode == "adk":
-        if _is_raw_agent_runtime_url(service_url):
-            _query_agent_runtime_sse(
+        if is_legacy_agent_runtime_url(service_url):
+            _query_legacy_agent_runtime_sse(
                 service_url=service_url,
                 message=build_agent_runtime_message(message, files),
                 headers=headers,
@@ -509,6 +435,21 @@ def _print_artifacts(paths: list[str]) -> None:
         click.secho(f"  {path}", dim=True)
 
 
+def _write_artifact(data: bytes, mime_type: str | None) -> str:
+    """Write artifact bytes to the artifacts dir and return a display path."""
+    mime = mime_type or "application/octet-stream"
+    ext = mimetypes.guess_extension(mime) or ""
+    artifacts_dir = Path.cwd() / _ARTIFACTS_DIR
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    path = artifacts_dir / f"{uuid.uuid4().hex[:8]}{ext}"
+    path.write_bytes(data)
+    # Prefer a relative path so terminals can cmd+click and shells can tab-complete.
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
 def _save_inline_artifact(data_b64: str, mime_type: str | None) -> str | None:
     """Decode URL-safe base64 inline data and save it as an artifact.
 
@@ -525,16 +466,7 @@ def _save_inline_artifact(data_b64: str, mime_type: str | None) -> str | None:
         )
         return None
 
-    ext = mimetypes.guess_extension(mime) or ""
-    artifacts_dir = Path.cwd() / _ARTIFACTS_DIR
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    path = artifacts_dir / f"{uuid.uuid4().hex[:8]}{ext}"
-    path.write_bytes(decoded)
-    # Prefer a relative path so terminals can cmd+click and shells can tab-complete.
-    try:
-        return str(path.relative_to(Path.cwd()))
-    except ValueError:
-        return str(path)
+    return _write_artifact(decoded, mime_type)
 
 
 def _print_author_tag(author: str | None, last_author: str | None) -> str | None:
@@ -577,57 +509,53 @@ def _query_adk_sse(
     session_id: str | None = None,
     verbose: bool = False,
 ) -> None:
-    """Create a session and stream an SSE response from an ADK FastAPI agent."""
+    """Create a session and stream an SSE response from an ADK FastAPI agent.
+
+    Thin CLI wrapper around :mod:`google.agents.cli._adk_client`: creates a
+    session if none is supplied, streams events from ``/run_sse``, and
+    renders each event to the terminal as it arrives.
+    """
     if not session_id:
-        # Create a new session
-        session_url = f"{service_url}/apps/{app_name}/users/cli-user/sessions"
-        session_resp = requests.post(session_url, headers=headers, json={}, timeout=30)
-        if not session_resp.ok:
+        try:
+            session_id = create_session(
+                service_url, app_name, "cli-user", headers=headers
+            )
+        except requests.HTTPError as exc:
+            response = exc.response
+            status = response.status_code if response is not None else "unknown"
+            body = response.text if response is not None else str(exc)
             hint = ""
-            if session_resp.status_code in (404, 405):
+            if response is not None and response.status_code in (404, 405):
                 hint = "\n  If this is an A2A agent, try --mode a2a instead."
             raise click.ClickException(
-                f"Failed to create session (HTTP {session_resp.status_code}):\n"
-                f"  {session_resp.text}{hint}"
-            )
-        session_data = session_resp.json()
-        session_id = session_data.get("id")
+                f"Failed to create session (HTTP {status}):\n  {body}{hint}"
+            ) from exc
 
     # Print user message (text part only for display)
     user_text = " ".join(p.get("text", "") for p in parts if "text" in p).strip()
     if user_text:
         click.echo(f"[user]: {user_text}")
 
-    # Send message via SSE
-    run_url = f"{service_url}/run_sse"
-    payload = {
-        "app_name": app_name,
-        "user_id": "cli-user",
-        "session_id": session_id,
-        "new_message": {
-            "role": "user",
-            "parts": parts,
-        },
-    }
-
     last_author = None
     artifacts: list[str] = []
-    with requests.post(
-        run_url, headers=headers, json=payload, stream=True, timeout=120
-    ) as resp:
-        if not resp.ok:
-            raise click.ClickException(
-                f"Failed to run agent (HTTP {resp.status_code}):\n  {resp.text}"
-            )
-        for line in resp.iter_lines(decode_unicode=True):
-            if not isinstance(line, str) or not line.startswith("data: "):
-                continue
-            data_str = line[len("data: ") :]
-            try:
-                event = json.loads(data_str)
-            except json.JSONDecodeError:
-                continue
+    user_message = {"role": "user", "parts": parts}
+    try:
+        for event in run_sse(
+            service_url,
+            app_name,
+            session_id,
+            user_message=user_message,
+            headers=headers,
+            user_id="cli-user",
+        ):
             last_author = _print_sse_event(event, last_author, verbose, artifacts)
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else "unknown"
+        body = response.text if response is not None else str(exc)
+        raise click.ClickException(
+            f"Failed to run agent (HTTP {status}):\n  {body}"
+        ) from exc
 
     click.echo()
     _print_artifacts(artifacts)
@@ -657,7 +585,7 @@ def _create_agent_runtime_session(
     return session_id
 
 
-def _query_agent_runtime_sse(
+def _query_legacy_agent_runtime_sse(
     service_url: str,
     message: str | dict,
     headers: dict,
@@ -729,110 +657,115 @@ def _query_agent_runtime_sse(
 
 def _query_a2a(
     *,
-    card_url: str,
+    a2a_bases: list[str],
     parts: list[Part],
     headers: dict,
-    url: str | None = None,
     session_id: str | None = None,
     verbose: bool = False,
 ) -> None:
-    """Fetch an A2A agent card and query the agent."""
-    resp = httpx.get(card_url, headers=headers, timeout=30)
-    if resp.status_code != 200:
-        hint = ""
-        if resp.status_code in (404, 405):
-            hint = "\n  If this is an ADK agent, try --mode adk instead."
-        raise click.ClickException(
-            f"Failed to fetch agent card (HTTP {resp.status_code}):\n  {resp.text}{hint}"
-        )
-    card = AgentCard(**resp.json())
-    if url:
-        card.url = url
-    _query_a2a_with_card(card, parts, headers, session_id=session_id, verbose=verbose)
+    """Probe candidate A2A base URLs for an agent card, then query the agent.
 
+    ``a2a_bases`` are tried in order; the first that serves a card at
+    ``{base}/.well-known/agent-card.json`` is used. If all candidates fail,
+    an error is raised listing one line per path tried.
+    """
+    failures: list[tuple[str, int, str]] = []  # [(path, status, error)]
+    for base in a2a_bases:
+        card_url = f"{base}{AGENT_CARD_WELL_KNOWN_PATH}"
+        resp = httpx.get(card_url, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            asyncio.run(
+                _query_a2a_async(
+                    base, parts, headers, session_id=session_id, verbose=verbose
+                )
+            )
+            return
+        failures.append((card_url, resp.status_code, resp.text))
 
-def _query_a2a_with_card(
-    agent_card: AgentCard,
-    parts: list[Part],
-    headers: dict,
-    *,
-    session_id: str | None = None,
-    verbose: bool = False,
-) -> None:
-    """Query an A2A agent using a pre-fetched agent card."""
-    asyncio.run(_query_a2a_async(agent_card, parts, headers, session_id, verbose))
+    detail = "\n".join(
+        f"  HTTP {status} from {url}:\n    {text}" for url, status, text in failures
+    )
+    hint = ""
+    if any(status in (404, 405) for _, status, _ in failures):
+        hint = "\n  If this is an ADK agent, try --mode adk instead."
+    raise click.ClickException(f"Failed to fetch agent card:\n{detail}{hint}")
 
 
 async def _query_a2a_async(
-    agent_card: AgentCard,
+    base_url: str,
     parts: list[Part],
     headers: dict,
     session_id: str | None = None,
     verbose: bool = False,
 ) -> None:
-    """Async implementation — sends a message and prints the response."""
-    agent_name = agent_card.name or "agent"
+    """Async implementation — sends a message and prints the response (a2a-sdk 1.0).
 
-    # Print user message (text parts only for display)
-    user_text = " ".join(
-        p.root.text for p in parts if isinstance(p.root, TextPart) and p.root.text
-    )
+    The client is resolved from the reachable ``base_url`` (which may differ from
+    the card's advertised URL, e.g. kubectl port-forward / Agent Runtime).
+    """
+    agent_name = "agent"
+
+    # Print user message (text parts only for display).
+    user_text = " ".join(p.text for p in parts if p.text)
     if user_text:
         click.echo(f"[user]: {user_text}")
 
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        factory = ClientFactory(
-            ClientConfig(
-                supported_transports=[
-                    TransportProtocol.jsonrpc,
-                    TransportProtocol.http_json,
-                ],
-                httpx_client=client,
-            )
+    req_headers = dict(headers)
+    # Note that on the 0.3 legacy compatibility path, this header gets overwritten,
+    # so including it should be safely backwards compatible.
+    req_headers.setdefault(VERSION_HEADER, PROTOCOL_VERSION_1_0)
+
+    async with httpx.AsyncClient(headers=req_headers, timeout=120) as http_client:
+        config = ClientConfig(
+            httpx_client=http_client,
+            # INVARIANT: keep JSONRPC here. The a2a-sdk v0.3 compat transport is
+            # JSON-RPC only; dropping it silently breaks consuming v0.3 agents.
+            supported_protocol_bindings=[
+                TransportProtocol.JSONRPC,
+                TransportProtocol.HTTP_JSON,
+            ],
         )
-        a2a_client = factory.create(agent_card)
+        try:
+            a2a_client = await create_client(base_url, config)
+        except Exception as exc:
+            raise click.ClickException(
+                f"Could not resolve an A2A agent at {base_url}: {exc}\n"
+                "  If this is an older agent, upgrade it with "
+                "'agents-cli scaffold upgrade', or try --mode adk."
+            ) from exc
 
         msg = Message(
             message_id=str(uuid.uuid4()),
-            role=Role.user,
+            role=Role.ROLE_USER,
             parts=parts,
-            context_id=session_id,
+            context_id=session_id or "",
         )
 
         last_author = None
         response_session_id = None
         artifacts: list[str] = []
-        async for event in a2a_client.send_message(msg):
-            if not isinstance(event, tuple):
-                continue
-            task, update = event
-
-            # Capture session/context ID from the response
-            if not response_session_id and task and task.context_id:
-                response_session_id = task.context_id
-
-            # Handle incremental artifact updates (streaming)
-            if isinstance(update, TaskArtifactUpdateEvent):
-                for part in update.artifact.parts:
+        async for chunk in a2a_client.send_message(SendMessageRequest(message=msg)):
+            if chunk.HasField("artifact_update"):
+                if not response_session_id and chunk.artifact_update.context_id:
+                    response_session_id = chunk.artifact_update.context_id
+                for part in chunk.artifact_update.artifact.parts:
                     last_author = _print_author_tag(agent_name, last_author)
                     _print_a2a_part(part, artifacts)
-            # Handle completed tasks with artifacts (non-streaming)
-            elif update is None and task.artifacts:
-                for artifact in task.artifacts:
+            elif chunk.HasField("task"):
+                if not response_session_id and chunk.task.context_id:
+                    response_session_id = chunk.task.context_id
+                for artifact in chunk.task.artifacts:
                     for part in artifact.parts:
                         last_author = _print_author_tag(agent_name, last_author)
                         _print_a2a_part(part, artifacts)
+            elif chunk.HasField("message"):
+                for part in chunk.message.parts:
+                    last_author = _print_author_tag(agent_name, last_author)
+                    _print_a2a_part(part, artifacts)
 
             if verbose:
-                # Raw event dump (matches ADK/Agent Runtime output)
-                raw: dict = {}
-                if task:
-                    raw["task"] = task.model_dump(exclude_none=True, mode="json")
-                if update:
-                    raw["update"] = update.model_dump(exclude_none=True, mode="json")
-                if raw:
-                    click.echo()
-                    click.secho(json.dumps(raw, indent=2, default=str), dim=True)
+                click.echo()
+                click.secho(str(chunk), dim=True)
 
     click.echo()
     _print_artifacts(artifacts)
@@ -840,20 +773,15 @@ async def _query_a2a_async(
 
 
 def _print_a2a_part(part: Part, artifacts: list[str]) -> None:
-    """Print an A2A response part. Appends saved artifact paths to ``artifacts``."""
-    root = part.root
-    if isinstance(root, TextPart) and root.text:
-        click.echo(root.text, nl=False)
-    elif isinstance(root, FilePart):
-        file_data = root.file
-        if isinstance(file_data, FileWithUri):
-            click.echo(f"\n[file: {file_data.uri}]", nl=False)
-        elif isinstance(file_data, FileWithBytes):
-            path = _save_inline_artifact(file_data.bytes, file_data.mime_type)
-            if path is not None:
-                artifacts.append(path)
-    elif hasattr(root, "data") and root.data is not None:
-        click.echo(f"\n{json.dumps(root.data, indent=2)}", nl=False)
+    """Print an A2A 1.0 response part. Appends saved artifact paths to ``artifacts``."""
+    if part.text:
+        click.echo(part.text, nl=False)
+    elif part.url:
+        click.echo(f"\n[file: {part.url}]", nl=False)
+    elif part.raw:
+        artifacts.append(_write_artifact(part.raw, part.media_type))
+    elif part.HasField("data"):
+        click.echo(f"\n{json.dumps(MessageToDict(part.data), indent=2)}", nl=False)
 
 
 def _print_sse_part(part: dict, artifacts: list[str]) -> None:

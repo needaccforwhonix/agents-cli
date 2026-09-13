@@ -15,14 +15,15 @@
 import logging
 
 import click
-import vertexai
-from rich.console import Console
-from rich.table import Table
-from vertexai._genai.types.common import (
+from agentplatform._genai.types.common import (
     EvaluationDataset,
 )
+from rich.table import Table
 
+import google.agents.cli._gcp_project as _gcp_project
 import google.agents.cli._project as _project
+from google.agents.cli._agent_platform import AgentPlatformClient
+from google.agents.cli._output import Console
 from google.agents.cli.eval import _paths
 from google.agents.cli.eval.eval_utils import (
     prepare_eval_metrics,
@@ -32,10 +33,12 @@ from google.agents.cli.eval.eval_utils import (
 )
 
 
-def _get_eval_client(project: str | None, region: str | None) -> vertexai.Client:
+def _get_eval_client(project: str | None, region: str | None) -> AgentPlatformClient:
     """Resolves GCP project and region, then initializes the Vertex AI Client."""
-    resolved_project = _project.resolve_gcp_project(project, required=True)
-    return vertexai.Client(project=resolved_project, location=resolve_eval_region(region))
+    resolved_project = _gcp_project.resolve_gcp_project(project, required=True)
+    return AgentPlatformClient(
+        project=resolved_project, location=resolve_eval_region(region)
+    )
 
 
 @click.command("submit")

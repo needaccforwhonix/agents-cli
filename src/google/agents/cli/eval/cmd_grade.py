@@ -15,17 +15,20 @@
 """agents-cli eval grade command — score traces with metrics."""
 
 import glob
+import logging
 import os
 from pathlib import Path
 
 import click
-import vertexai
-from rich.console import Console
-from vertexai._genai.types.common import (
+from agentplatform._genai.types.common import (
     EvaluationDataset,
+    EvaluationResult,
 )
 
+import google.agents.cli._gcp_project as _gcp_project
 import google.agents.cli._project as _project
+from google.agents.cli._agent_platform import AgentPlatformClient
+from google.agents.cli._output import Console
 from google.agents.cli.eval import _paths
 from google.agents.cli.eval.eval_utils import (
     load_eval_dotenv,
@@ -36,6 +39,24 @@ from google.agents.cli.eval.eval_utils import (
 )
 
 _DEFAULT_EVAL_CONFIG_PATH = os.path.join("tests", "eval", "eval_config.yaml")
+
+# The SDK paces every metric computation through one limiter sized for the eval
+# service, including local metrics that never call it. This rate replaces it:
+# enough to keep a judge that reuses its client busy, low enough that one
+# building a client per case still completes.
+DEFAULT_QPS = 15.0
+# Reused by `eval run`, which forwards the flag.
+qps_option = click.option(
+    "--qps",
+    type=click.FloatRange(min=0, min_open=True),
+    default=DEFAULT_QPS,
+    show_default=True,
+    help=(
+        "Metric computations dispatched per second. Raise it when your metrics "
+        "are cheap or your judge reuses one client; lower it when the judge "
+        "model or the eval service rate-limits you."
+    ),
+)
 
 
 def _load_traces_eval_cases(traces_path: str) -> tuple[list, int]:
@@ -62,6 +83,22 @@ def _load_traces_eval_cases(traces_path: str) -> tuple[list, int]:
         raise click.ClickException("No eval_cases found in the provided trace files.")
 
     return all_eval_cases, len(json_files)
+
+
+def _warn_on_dropped_cases(result: EvaluationResult) -> None:
+    """Name the cases that errored, which the mean and the exit status hide."""
+    errored = {
+        m.metric_name: m.num_cases_error
+        for m in result.summary_metrics or []
+        if m.num_cases_error
+    }
+    if not errored:
+        return
+    logging.warning(
+        "Scores average only the cases that graded, excluding: %s. The saved "
+        "results carry each error; if they are rate limits, lower --qps.",
+        ", ".join(f"{name} ({count})" for name, count in errored.items()),
+    )
 
 
 _print_results_table = print_results_table
@@ -105,6 +142,7 @@ _save_evaluation_artifacts = save_evaluation_artifacts
     default=None,
     help="GCP region for the Vertex eval service. Defaults to 'global'.",
 )
+@qps_option
 def cmd_grade(
     *,
     traces_path: str | None = None,
@@ -113,6 +151,7 @@ def cmd_grade(
     config_path: str | None = None,
     project: str | None = None,
     region: str | None = None,
+    qps: float = DEFAULT_QPS,
 ) -> None:
     """Score populated agent traces against one or more metrics."""
     console = Console()
@@ -121,7 +160,6 @@ def cmd_grade(
     # model-calling metrics (e.g. an LLM-judge via google-genai) pick up the
     # configured backend -- GEMINI_API_KEY (AI Studio) or GOOGLE_CLOUD_* (Vertex).
     load_eval_dotenv(project_root or Path.cwd())
-    cfg = None
 
     # Default config path in case one is not explicitly supplied
     default_config_path = None
@@ -171,26 +209,35 @@ def cmd_grade(
         f"Loaded {len(all_eval_cases)} total eval cases from {file_count} file(s)."
     )
 
+    uses_eval_service = len(metrics) > local_custom_count
+
     metric_names = [m.name if hasattr(m, "name") else str(m) for m in metrics]
     console.print(
-        f"Running evaluation for metrics: [cyan]{', '.join(metric_names)}[/cyan]..."
+        f"Running evaluation for metrics: [cyan]{', '.join(metric_names)}[/cyan] "
+        f"at {qps:g}/s (--qps to change)..."
     )
 
     merged_dataset = EvaluationDataset(eval_cases=all_eval_cases)
 
-    needs_gcp = len(metrics) > local_custom_count
-
     try:
-        if needs_gcp:
-            resolved_project = _project.resolve_gcp_project(project, required=True)
+        if uses_eval_service:
+            resolved_project = _gcp_project.resolve_gcp_project(project, required=True)
             resolved_region = resolve_eval_region(region)
-            client = vertexai.Client(project=resolved_project, location=resolved_region)
+            client = AgentPlatformClient(
+                project=resolved_project, location=resolved_region
+            )
         else:
-            client = vertexai.Client(project=None, location=None)
-        result = client.evals.evaluate(dataset=merged_dataset, metrics=metrics)
+            client = AgentPlatformClient(project=None, location=None)
+        result = client.evals.evaluate(
+            dataset=merged_dataset,
+            metrics=metrics,
+            config={"evaluation_service_qps": qps},
+        )
 
         _print_results_table(result, console)
         _save_evaluation_artifacts(result, output_path, console)
+        # After saving, so the warning can point at the artifacts it mentions.
+        _warn_on_dropped_cases(result)
 
     except click.ClickException:
         raise

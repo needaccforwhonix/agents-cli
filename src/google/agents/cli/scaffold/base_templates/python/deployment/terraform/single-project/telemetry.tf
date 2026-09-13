@@ -51,7 +51,7 @@ resource "google_storage_bucket_iam_member" "telemetry_connection_access" {
 }
 
 # ====================================================================
-# Log Sinks — route GenAI and feedback logs directly to BigQuery
+# Log Sinks — route GenAI logs directly to BigQuery
 # ====================================================================
 
 # Log sink to route GenAI telemetry logs directly to BigQuery
@@ -59,23 +59,9 @@ resource "google_logging_project_sink" "genai_logs_to_bq" {
   name        = "${var.project_name}-genai-logs"
   project     = var.project_id
   destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.telemetry_dataset.dataset_id}"
-  filter      = "log_name=\"projects/${var.project_id}/logs/gen_ai.client.inference.operation.details\" AND (labels.\"gen_ai.input.messages_ref\" =~ \".*${var.project_name}.*\" OR labels.\"gen_ai.output.messages_ref\" =~ \".*${var.project_name}.*\")"
-
-  unique_writer_identity = true
-
-  bigquery_options {
-    use_partitioned_tables = true
-  }
-
-  depends_on = [google_bigquery_dataset.telemetry_dataset]
-}
-
-# Log sink for user feedback logs — routes to the same BigQuery dataset
-resource "google_logging_project_sink" "feedback_logs_to_bq" {
-  name        = "${var.project_name}-feedback"
-  project     = var.project_id
-  destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.telemetry_dataset.dataset_id}"
-  filter      = var.feedback_logs_filter
+  # Match GenAI completion logs on the event.name label (the log id, and hence
+  # the BigQuery sink table name, varies by deployment target).
+  filter      = "labels.\"event.name\"=\"gen_ai.client.inference.operation.details\" AND (labels.\"gen_ai.input.messages_ref\" =~ \".*${var.project_name}.*\" OR labels.\"gen_ai.output.messages_ref\" =~ \".*${var.project_name}.*\")"
 
   unique_writer_identity = true
 
@@ -92,13 +78,6 @@ resource "google_bigquery_dataset_iam_member" "genai_logs_bq_writer" {
   dataset_id = google_bigquery_dataset.telemetry_dataset.dataset_id
   role       = "roles/bigquery.dataEditor"
   member     = google_logging_project_sink.genai_logs_to_bq.writer_identity
-}
-
-resource "google_bigquery_dataset_iam_member" "feedback_logs_bq_writer" {
-  project    = var.project_id
-  dataset_id = google_bigquery_dataset.telemetry_dataset.dataset_id
-  role       = "roles/bigquery.dataEditor"
-  member     = google_logging_project_sink.feedback_logs_to_bq.writer_identity
 }
 
 # ====================================================================
@@ -163,7 +142,7 @@ resource "google_bigquery_table" "completions_external_table" {
 resource "google_bigquery_table" "genai_logs_table" {
   project             = var.project_id
   dataset_id          = google_bigquery_dataset.telemetry_dataset.dataset_id
-  table_id            = "gen_ai_client_inference_operation_details"
+  table_id            = {% if cookiecutter.deployment_target == 'agent_runtime' %}"aiplatform_googleapis_com_reasoning_engine_stdout"{% else %}"gen_ai_client_inference_operation_details"{% endif %}
   deletion_protection = false
   description         = "GenAI inference logs exported directly from Cloud Logging"
 
@@ -199,6 +178,7 @@ resource "google_bigquery_table" "completions_view" {
       project_id                 = var.project_id
       dataset_id                 = google_bigquery_dataset.telemetry_dataset.dataset_id
       completions_external_table = google_bigquery_table.completions_external_table.table_id
+      genai_logs_table           = google_bigquery_table.genai_logs_table.table_id
     })
     use_legacy_sql = false
   }

@@ -14,12 +14,11 @@
 
 """agents-cli infra single-project — provision single-project terraform."""
 
-from pathlib import Path
-
 import click
 
 from google.agents.cli._project import chdir_project_root
 from google.agents.cli._tools import require_tool
+from google.agents.cli.infra._terraform import require_single_project_tf_dir
 
 
 @click.command("single-project")
@@ -50,14 +49,7 @@ def cmd_infra_single_project(project, apply_changes):
 
     from google.agents.cli.infra._cicd_utils import run_terraform
 
-    tf_dir = Path("deployment/terraform/single-project")
-
-    if not tf_dir.is_dir():
-        raise click.ClickException(
-            f"Terraform directory '{tf_dir}' not found.\n"
-            "  Ensure your project was scaffolded with a deployment target that includes Terraform.\n"
-            "  Run 'agents-cli scaffold enhance' to add deployment infrastructure."
-        )
+    tf_dir = require_single_project_tf_dir()
 
     extra_vars = {"project_id": project} if project else None
     run_terraform(tf_dir=tf_dir, apply=apply_changes, extra_vars=extra_vars)
@@ -67,3 +59,6 @@ def cmd_infra_single_project(project, apply_changes):
         if project:
             followup += f" --project {project}"
         click.echo(f"\nTo apply these changes, run:\n  {followup}")
+        return
+
+    click.echo("\nTo see what was provisioned, run:\n  agents-cli infra show")

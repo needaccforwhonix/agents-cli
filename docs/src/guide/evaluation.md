@@ -12,14 +12,22 @@ Run structured evaluations to confirm your agent calls the right tools, produces
 Your project includes a default dataset at `tests/eval/datasets/basic-dataset.json` and metrics configuration `tests/eval/eval_config.yaml`. Run it:
 
 ```bash
-agents-cli eval generate
-agents-cli eval grade
+agents-cli eval run
 ```
 
-The output shows scores for each eval case against the configured metrics.
+`eval run` executes the agent over the dataset and grades the traces in one step. The output shows scores for each eval case against the configured metrics.
 
 ```bash
 # Run for a custom dataset and different metrics
+agents-cli eval run --dataset tests/eval/datasets/custom-dataset.json --metrics general_quality
+
+# Evaluate a deployed agent instead of running one locally
+agents-cli eval run --url https://my-agent.run.app --app-name app
+```
+
+Split the run into `eval generate` and `eval grade` when you want traces in a custom location, or want to re-grade existing traces without re-running the agent:
+
+```bash
 agents-cli eval generate --dataset tests/eval/datasets/custom-dataset.json --output custom_traces/
 agents-cli eval grade --metrics general_quality --traces custom_traces/
 ```
@@ -52,7 +60,7 @@ A short reference for the most-used built-in metric IDs. Use `agents-cli eval me
 | `multi_turn_trajectory_quality` | Sequential logic, efficiency, and error-recovery robustness across turns. |
 | `multi_turn_task_success` | Whether the user's goal was fulfilled across the full multi-turn conversation. |
 | `final_response_quality` | Comprehensive evaluation of the final response and intermediate tool usage. |
-| `final_response_reference_free` | Final-response quality without a reference answer (requires custom rubrics). |
+| `final_response_reference_free` | Final-response quality without a reference answer. Requires `rubric_groups` on the case. |
 | `final_response_match` | Compares the agent's final response to a provided golden reference answer. |
 | `hallucination` | Segments the response into atomic claims and verifies each against tool-returned context. |
 | `grounding` | Factuality and consistency against provided context. |
@@ -86,20 +94,22 @@ custom_metrics:
       Final response: {response}
       Full trace (for tool-call and reasoning context): {agent_data}
       Return JSON: {"score": <1|2|3|4|5>, "explanation": "<reason>"}
-    judge_model: gemini-flash-latest
+    judge_model: gemini-3.7-flash
     judge_model_sampling_count: 3
 ```
 
 Each custom metric must conform to either the **Code Execution Metric** or **LLM-as-a-Judge Metric** (`LLMMetric`) schema:
 - **Code Execution Metric**: Used to run custom Python code for evaluation. Must have a `name` and a `custom_function` (containing a `def evaluate(instance):` signature). By default, the function executes **locally in the CLI process** — no GCP project or region is required, but the user-supplied code runs with the CLI's privileges. Add `"execution": "remote"` to opt into Vertex AI's sandboxed `CodeExecutionMetric` (server-side), which requires a configured GCP project + region.
-- **LLM-as-a-Judge Metric**: Used to evaluate responses using an LLM judge. Must have a `name` and a `prompt_template`. Optional fields include `rubric_group_name`, `judge_model` (e.g., `gemini-flash-latest`), and `judge_model_sampling_count` (between `1` and `32`).
+- **LLM-as-a-Judge Metric**: Used to evaluate responses using an LLM judge. Must have a `name` and a `prompt_template`. Optional fields include `judge_model` (e.g., `gemini-3.7-flash`) and `judge_model_sampling_count` (between `1` and `32`).
 
 ### Quick Reference for Common Scenarios
 
 - **Agents with custom function tools** — Use `tool_use_quality` (for single-turn) or `multi_turn_tool_use_quality` + `multi_turn_trajectory_quality` (for multi-turn).
-- **RAG agents** — Use `grounding` + `hallucination` + `safety`.
-- **Conversational assistants** — Use `general_quality` or `multi_turn_general_quality`.
+- **RAG agents**: use `hallucination` + `safety`, plus `grounding` when the case carries a `context` field.
+- **Conversational assistants**: use `general_quality` (single-turn) or `multi_turn_task_success` (multi-turn).
 - **Goal-oriented agents** — Use `multi_turn_task_success`.
+
+Only `multi_turn_task_success`, `multi_turn_trajectory_quality`, and `multi_turn_tool_use_quality` accept multi-turn traces; the other built-ins reject them.
 
 ---
 
@@ -108,17 +118,17 @@ Each custom metric must conform to either the **Code Execution Metric** or **LLM
 Evaluation is iterative. Expect 5-10+ cycles before your agent consistently passes.
 
 1. **Write 1-2 core eval cases** covering the most important behavior.
-2. **Run**: `agents-cli eval generate` followed by `agents-cli eval grade`
+2. **Run**: `agents-cli eval run`
 3. **Read the results** — which cases failed and why.
 4. **Fix** — adjust the agent's instruction, tools, or logic.
-5. **Re-run**: `agents-cli eval generate` and `agents-cli eval grade`
+5. **Re-run**: `agents-cli eval run`
 6. **Expand** — once core cases pass, add edge cases and new scenarios.
 
 ---
 
-## Beyond `generate` and `grade`
+## Beyond `eval run`
 
-`generate` and `grade` form the inner loop, but the eval surface has a few more commands worth knowing about. Each is a separate step you reach for as your eval setup matures.
+`eval run` forms the inner loop, but the eval surface has a few more commands worth knowing about. Each is a separate step you reach for as your eval setup matures.
 
 ### `agents-cli eval dataset synthesize`
 

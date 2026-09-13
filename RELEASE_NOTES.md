@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+
+## [1.5.0] - 2026-09-01
+
+- **Extension system with a LangChain template.** `agents-cli` can now be extended with custom commands and add-on agent templates, shipped with a LangChain extension and authoring guides. Extensions install from GitHub, other git hosts (including self-hosted and enterprise servers), or a local path for development.
+- Add `agents-cli infra show` to inspect the Terraform configuration provisioned by `agents-cli infra single-project`.
+- Add `--update-only` to `agents-cli deploy`, so a deploy updates an existing Agent Runtime engine instead of creating a duplicate.
+- Add a `--labels` flag to `agents-cli deploy` to tag Agent Runtime and Cloud Run deployments.
+- Add `--qps` to `agents-cli eval` that controls the request rate instead of being throttled to the default value.
+- Name the scaffolded root agent after its project instead of a generic default.
+- `agents-cli deploy` now retries throttled Agent Platform calls.
+- `agents-cli create` now reports precondition failures as clear errors instead of exiting successfully or printing a traceback.
+  - https://github.com/google/agents-cli/issues/68
+- Fix background server reuse ignoring the requested session mode.
+  - https://github.com/google/agents-cli/issues/70
+- Fix `reasoning_engine_adapter` streaming returning an empty response.
+  - https://github.com/google/agents-cli/issues/80
+- Prevent multi-region deployments in scaffold and deploy.
+  - https://github.com/google/agents-cli/issues/81
+- Give a clear error for malformed project manifests instead of silently defaulting or printing a traceback.
+  - https://github.com/google/agents-cli/issues/74
+- Fix stale command references in docs and CLI hints.
+  - https://github.com/google/agents-cli/issues/77
+- Scaffolded A2A agents now forward tool calls and responses to clients, not just text.
+- `agents-cli setup` now works without network or git access, with skills bundled into the package.
+- Fix a Windows failure loading a scaffolded project whose config points at a local path.
+
+## [1.4.2] - 2026-08-28
+
+- Adds upper-bound for google-cloud-aiplatform dependency.
+
+## [1.4.1] - 2026-08-24
+
+- Scaffolds now default to `gemini-3.7-flash`.
+- `agents-cli eval generate` no longer fails to generate traces for some agents.
+- `agents-cli deploy` now defaults to `--min-instances 0` (was `1`) on Agent Runtime and Cloud Run, so that idle dev and demo agents don't take up resources.
+- `agents-cli scaffold upgrade` now creates a project backup before applying changes, just like `agents-cli scaffold enhance`.
+- Fixed `npx skills find` to use the pinned `skills` version.
+  - https://github.com/google/agents-cli/issues/72
+- Fixed an arbitrary file write vulnerability in `agents-cli scaffold create`.
+  - https://github.com/google/agents-cli/issues/50
+
+## [1.4.0] - 2026-08-17
+
+- Add Agent Gateway support to `agents-cli deploy`
+- Improve A2A-on-Agent-Runtime and MCP Agent Registry guidance in skills
+- Use token-based context compaction in ADK cheatsheet
+- Add held-out case guidance during iteration to the eval skill
+- Remove built-in feedback endpoint, add guidance on building a feedback mechanism to the observability skill instead
+- Display project language in `agents-cli info`
+- Use $GH_TOKEN and $GITHUB_TOKEN environment variables as fallbacks for `--github-pat`
+  - https://github.com/google/agents-cli/issues/18
+- Populate class_methods contract on agent_runtime deploy
+  - https://github.com/google/agents-cli/issues/55
+
+## [1.3.1] - 2026-08-04
+
+- Add agent-plugins.org plugin manifest
+- Smarter backoff handling for CICD command
+- Rollback to npx skills 1.5.9 to avoid a spurious error message during `setup`
+  - https://github.com/google/agents-cli/issues/59
+
+## [1.3.0] - 2026-07-31
+
+- Update to use A2A 1.0 throughout, with a compatibility layer for A2A 0.3 clients
+- Improve retry for Cloud Run deploy
+- Streamline retry handing for `infra cicd` command
+- Fix `npx skills` output formatting during setup and update
+- Print Cloud Logging URL at Agent Runtime deploy start
+- Add --concurrency and --header flags to eval generate/run
+- Tweak messages around `--session-type` when used with `agent_runtime`
+
+## [1.2.1] - 2026-07-23
+
+- Fix an import problem on `uv sync` caused by a yanked `opentelemetry-resourcedetector-gcp` version
+- Add optional HTTP-based path for `eval generate` using `--url` (in-progress feature, stay tuned)
+
+## [1.2.0] - 2026-07-21
+
+- **Cloud telemetry moved to ADK's `otel_to_cloud`, across the CLI and deploys.** `playground` and `run` gain an `--otel-to-cloud` flag that forwards ADK's current `--otel_to_cloud`; the old `--trace-to-cloud` stays as a hidden, still-functional alias that warns when used. On the deployment side, Agent Runtime now exports through `otel_to_cloud` (gated on `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY`) and generated projects configure Cloud telemetry declaratively in Terraform instead of at runtime. Bundled `google-adk` moves to `>=2.2.0` with the `otel-gcp` extra, and the observability skill was updated to match.
+- Scaffolds now default to `gemini-3.6-flash`.
+- **Agent Analytics now captures GenAI completions on Agent Runtime.** The BigQuery telemetry log sink is configured per deployment target, so Agent Runtime deployments route their GenAI request/response logs into BigQuery instead of leaving the completions view empty.
+- **Managed Agents guidance in the ADK code skill.** The bundled ADK cheatsheet gained a Managed Agents section covering when to use `ManagedAgent`, Gemini API vs Agent Platform (GEAP) setup, and a runnable create-and-use example.
+
 ## [1.1.0] - 2026-07-10
 
 - **Guided brainstorming for new agents.** The workflow skill's Phase 0 is now an interactive brainstorming dialogue that helps you shape an agent's spec before any code is written, and surfaces its assumptions for review when it can't ask.

@@ -22,7 +22,7 @@ dataset synthesize`` and is only intended to be invoked by that command.
 Do not modify it — edits will be lost.
 
 ``GOOGLE_CLOUD_PROJECT`` and ``GOOGLE_CLOUD_LOCATION`` are loaded from the
-agent's ``.env`` (see ``_resolve_gcp_env``) and consumed by ``vertexai.Client``.
+agent's ``.env`` (see ``_resolve_gcp_env``) and consumed by ``agentplatform.Client``.
 """
 
 import asyncio
@@ -34,7 +34,8 @@ import traceback
 import uuid
 from pathlib import Path
 
-import vertexai
+import agentplatform
+from agentplatform import types
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.evaluation.conversation_scenarios import (
     ConversationScenario,
@@ -50,7 +51,6 @@ from google.adk.evaluation.simulation.llm_backed_user_simulator import (
     LlmBackedUserSimulatorConfig,
 )
 from google.genai import types as genai_types
-from vertexai import types
 
 
 def _safe_tool_declarations(agent):
@@ -96,7 +96,7 @@ def _patch_eval_tool_introspection():
     https://github.com/googleapis/python-aiplatform/issues/6865.
     """
     try:
-        from vertexai._genai.types.evals import AgentConfig
+        from agentplatform._genai.types.evals import AgentConfig
     except Exception:
         return
     AgentConfig._get_tool_declarations_from_agent = staticmethod(  # ty: ignore[invalid-assignment]
@@ -266,7 +266,9 @@ def main():
     _patch_eval_tool_introspection()
     agent_info = types.evals.AgentInfo.load_from_agent(agent=agent)
 
-    client = vertexai.Client(project=project, location=location)
+    # Staged into the user's project and run with their interpreter, so it
+    # cannot import the factory (see cmd_dataset._stage_synthesize_runner).
+    client = agentplatform.Client(project=project, location=location)  # noqa: TID251
     print(
         f"Calling Vertex AI generate_conversation_scenarios "
         f"(project={project}, location={location})...",

@@ -34,9 +34,11 @@ dist/
 *.tfstate
 *.tfstate.*
 *.tfplan
-
+{% if 'adk' in cookiecutter.tags %}
 # ADK
 .adk/
+
+{% endif -%}
 
 # OS files
 .DS_Store

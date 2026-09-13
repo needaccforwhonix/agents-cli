@@ -17,13 +17,10 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING
 
 import requests
 
-# Type hints only - no runtime import cost
-if TYPE_CHECKING:
-    from rich.console import Console
+from google.agents.cli._output import Console
 
 from .command import run_gcloud_command
 from .version import PACKAGE_NAME, get_current_version
@@ -31,18 +28,7 @@ from .version import PACKAGE_NAME, get_current_version
 # API endpoint constants
 RESOURCE_MANAGER_API_BASE = "https://cloudresourcemanager.googleapis.com"
 
-# Lazy console - only create when needed
-_console = None
-
-
-def _get_console() -> Console:
-    """Lazily initialize rich Console."""
-    from rich.console import Console
-
-    global _console
-    if _console is None:
-        _console = Console()
-    return _console
+console = Console()
 
 
 _AUTH_ERROR_MESSAGE = (
@@ -148,8 +134,6 @@ def _test_vertex_connection(
 
 def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
     """Enable Vertex AI API and wait for propagation."""
-    console = _get_console()
-
     try:
         console.print("Enabling Vertex AI API...")
         run_gcloud_command(
@@ -242,7 +226,6 @@ def verify_credentials_and_vertex(
                 )
             else:
                 # Interactive mode - offer to enable
-                console = _get_console()
                 console.print(
                     f"Vertex AI API is not enabled in project '{project}'.",
                     style="yellow",

@@ -20,10 +20,9 @@ import tempfile
 import time
 from pathlib import Path
 
-import backoff
 import click
-from rich.console import Console
 
+from google.agents.cli._output import Console
 from google.agents.cli._project import chdir_project_root, read_project_config
 from google.agents.cli._tools import (
     ToolNotFoundError,
@@ -32,6 +31,7 @@ from google.agents.cli._tools import (
 from google.agents.cli.infra._cicd_utils import (
     ProjectConfig,
     create_github_connection,
+    ensure_bucket_exists,
     handle_github_authentication,
     is_github_authenticated,
     run_command,
@@ -164,6 +164,7 @@ def setup_git_repository(config: ProjectConfig) -> str:
             ["git", "remote", "get-url", "origin"],
             capture_output=True,
             check=True,
+            retry=None,
         )
         console.print("✅ Git remote already configured")
     except subprocess.CalledProcessError:
@@ -305,50 +306,24 @@ def prompt_for_repository_details(
 
 
 def setup_terraform_backend(
-    tf_dir: Path, project_id: str, region: str, repository_name: str
+    tf_dir: Path,
+    project_id: str,
+    region: str,
+    repository_name: str,
+    force_bucket: bool = False,
 ) -> None:
     """Setup terraform backend configuration with GCS bucket"""
     console.print("\n🔧 Setting up Terraform backend...")
 
     bucket_name = f"{project_id}-terraform-state"
 
-    # Ensure bucket exists
-    try:
-        result = run_command(
-            ["gcloud", "storage", "buckets", "describe", f"gs://{bucket_name}"],
-            check=False,
-            capture_output=True,
-        )
-
-        if result.returncode != 0:
-            console.print(f"\n📦 Creating Terraform state bucket: {bucket_name}")
-            # Create bucket
-            run_command(
-                [
-                    "gcloud",
-                    "storage",
-                    "buckets",
-                    "create",
-                    f"gs://{bucket_name}",
-                    f"--project={project_id}",
-                    f"--location={region}",
-                ]
-            )
-
-            # Enable versioning
-            run_command(
-                [
-                    "gcloud",
-                    "storage",
-                    "buckets",
-                    "update",
-                    f"gs://{bucket_name}",
-                    "--versioning",
-                ]
-            )
-    except subprocess.CalledProcessError as e:
-        console.print(f"\n❌ Failed to setup state bucket: {e}")
-        raise
+    # Ensure bucket exists and is owned by project_id
+    ensure_bucket_exists(
+        bucket_name=bucket_name,
+        project_id=project_id,
+        region=region,
+        force_bucket=force_bucket,
+    )
 
     # Create backend.tf in both cicd and single-project directories
     tf_dirs = [
@@ -389,27 +364,43 @@ def create_or_update_secret(secret_id: str, secret_value: str, project_id: str) 
     Raises:
         subprocess.CalledProcessError: If secret creation/update fails
     """
+    # Check if the secret exists first
+    secret_exists = (
+        run_command(
+            ["gcloud", "secrets", "describe", secret_id, f"--project={project_id}"],
+            capture_output=True,
+            check=False,
+            retry=None,
+        ).returncode
+        == 0
+    )
+
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as temp_file:
         temp_file.write(secret_value)
         temp_file.flush()
 
-        # First try to add a new version to existing secret
-        try:
-            run_command(
-                [
-                    "gcloud",
-                    "secrets",
-                    "versions",
-                    "add",
-                    secret_id,
-                    "--data-file",
-                    temp_file.name,
-                    f"--project={project_id}",
-                ]
-            )
-            console.print("✅ Updated existing GitHub PAT secret")
-        except subprocess.CalledProcessError:
-            # If adding version fails (secret doesn't exist), try to create it
+        if secret_exists:
+            try:
+                run_command(
+                    [
+                        "gcloud",
+                        "secrets",
+                        "versions",
+                        "add",
+                        secret_id,
+                        "--data-file",
+                        temp_file.name,
+                        f"--project={project_id}",
+                    ]
+                )
+                console.print("✅ Updated existing GitHub PAT secret")
+            except subprocess.CalledProcessError as e:
+                console.print(
+                    f"❌ Failed to update GitHub PAT secret: {e!s}",
+                    style="bold red",
+                )
+                raise
+        else:
             try:
                 run_command(
                     [
@@ -427,7 +418,7 @@ def create_or_update_secret(secret_id: str, secret_value: str, project_id: str) 
                 console.print("✅ Created new GitHub PAT secret")
             except subprocess.CalledProcessError as e:
                 console.print(
-                    f"❌ Failed to create/update GitHub PAT secret: {e!s}",
+                    f"❌ Failed to create GitHub PAT secret: {e!s}",
                     style="bold red",
                 )
                 raise
@@ -449,7 +440,11 @@ def create_or_update_secret(secret_id: str, secret_value: str, project_id: str) 
     help="Repository owner (optional, defaults to current GitHub user)",
 )
 @click.option("--host-connection-name", help="Host connection name (optional)")
-@click.option("--github-pat", help="GitHub Personal Access Token for programmatic auth")
+@click.option(
+    "--github-pat",
+    envvar=["GH_TOKEN", "GITHUB_TOKEN"],
+    help="GitHub Personal Access Token for programmatic auth",
+)
 @click.option(
     "--github-app-installation-id",
     help="GitHub App Installation ID for programmatic auth",
@@ -487,11 +482,13 @@ def create_or_update_secret(secret_id: str, secret_value: str, project_id: str) 
     default=False,
     help="Apply changes. Without this flag, only a plan is shown.",
 )
-@backoff.on_exception(
-    backoff.expo,
-    (subprocess.CalledProcessError, click.ClickException),
-    max_tries=3,
-    jitter=backoff.full_jitter,
+@click.option(
+    "--force-bucket",
+    "--force",
+    "force_bucket",
+    is_flag=True,
+    default=False,
+    help="Allow usage of a terraform config bucket that exists in a different GCP project. By default, this is disallowed to guard against bucket squatting attacks.",
 )
 def setup_cicd(
     *,
@@ -510,6 +507,7 @@ def setup_cicd(
     interactive: bool,
     create_repository: bool,
     apply_changes: bool,
+    force_bucket: bool = False,
     cicd_runner: str | None = None,
 ) -> None:
     """Set up CI/CD pipelines and Terraform infrastructure for your agent project.
@@ -658,6 +656,7 @@ def setup_cicd(
             ["gh", "repo", "view", f"{repository_owner}/{repository_name}"],
             capture_output=True,
             check=False,
+            retry=None,
         ).returncode
         == 0
     )
@@ -705,10 +704,10 @@ def setup_cicd(
                 raise
 
         else:
-            # Programmatic mode: require both --github-pat and --github-app-installation-id
+            # Programmatic mode: require both --github-pat or $GH_TOKEN/$GITHUB_TOKEN and --github-app-installation-id
             if not github_pat or not github_app_installation_id:
                 raise click.UsageError(
-                    "--github-pat and --github-app-installation-id are required for "
+                    "--github-pat (or at least one of $GH_TOKEN or $GITHUB_TOKEN environment variables) and --github-app-installation-id are required for "
                     "Cloud Build in programmatic mode. Pass -i / --interactive for "
                     "interactive OAuth flow."
                 )
@@ -740,6 +739,7 @@ def setup_cicd(
             project_id=cicd_project,
             region=region,
             repository_name=repository_name,
+            force_bucket=force_bucket,
         )
         console.print("✅ Remote Terraform backend configured")
     else:

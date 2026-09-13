@@ -54,7 +54,7 @@ The agent definition ends up looking something like:
 ```python title="app/agent.py"
 root_agent = Agent(
     name="caveman_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(model="gemini-3.7-flash"),
     instruction="""You caveman compressor. Human give long words,
     you make short. Rules:
     - No articles. No filler. No fluff.
@@ -94,8 +94,7 @@ Your coding agent activates the `google-agents-cli-eval` skill and:
 - Runs the evaluation:
 
 ```bash
-agents-cli eval generate
-agents-cli eval grade
+agents-cli eval run
 ```
 
 If cases fail, tell your coding agent what to fix:
@@ -104,7 +103,7 @@ If cases fail, tell your coding agent what to fix:
 
 Your coding agent adjusts the instruction, re-runs the evaluation, and iterates until quality thresholds pass.
 
-The eval surface goes beyond `generate` and `grade` — `eval dataset synthesize`, `eval compare`, `eval analyze`, and `eval optimize` cover synthetic case generation, regression diffing, failure clustering, and prompt auto-tuning. See the [Evaluation Guide](evaluation.md#beyond-generate-and-grade) for the full surface.
+The eval surface goes beyond `eval run`: `eval dataset synthesize`, `eval compare`, `eval analyze`, and `eval optimize` cover synthetic case generation, regression diffing, failure clustering, and prompt auto-tuning. See the [Evaluation Guide](evaluation.md#beyond-eval-run) for the full surface.
 
 ---
 
@@ -165,6 +164,6 @@ Try building something more complex:
 
 - Add tools — *"Add a Google Search tool so the caveman can grunt about current events"*
 - Multi-agent — *"Create an A2A agent that other agents can talk to"* (use the `adk` template — A2A is built in)
-- RAG — *"Build an agent that answers questions from our docs"* (clone-and-study a RAG sample — see [Agent Templates](templates.md#rag-retrieval-augmented-generation))
+- RAG — *"Build an agent that answers questions from our docs"* (your coding agent studies a RAG recipe — see [Extending the starter agent](development.md#extending-the-starter-agent))
 
-See [Agent Templates](templates.md) for all options, or jump to the [Development Guide](development.md) for the full workflow.
+See the [Development Guide](development.md) for the full workflow.

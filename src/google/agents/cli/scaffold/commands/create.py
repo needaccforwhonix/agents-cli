@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import logging
 import os
 import pathlib
-import random
 import shutil
 import subprocess
 import tempfile
@@ -24,10 +24,10 @@ from dataclasses import dataclass
 
 import click
 from click.core import ParameterSource
-from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 
-from google.agents.cli._project import resolve_gcp_project
+from google.agents.cli._gcp_project import resolve_gcp_project
+from google.agents.cli._output import Console
 
 from ..utils import remote_template, template
 from ..utils.command import run_gcloud_command
@@ -47,6 +47,23 @@ class AgentSelectionResult:
 
 # Export the shared decorator for use by other commands
 __all__ = ["create", "shared_template_options"]
+
+
+def _handle_create_errors(f: Callable) -> Callable:
+    """Convert create failures to Click's concise CLI errors."""
+
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except (click.ClickException, click.Abort):
+            raise
+        except ValueError as e:
+            raise click.UsageError(str(e)) from e
+        except Exception as e:
+            raise click.ClickException(str(e)) from e
+
+    return wrapper
 
 
 def shared_template_options(f: Callable) -> Callable:
@@ -96,7 +113,7 @@ def shared_template_options(f: Callable) -> Callable:
     f = click.option("--debug", is_flag=True, help="Enable debug logging")(f)
     f = click.option(
         "--session-type",
-        type=click.Choice(["in_memory", "cloud_sql", "agent_platform_sessions"]),
+        type=click.Choice(list(template.SESSION_TYPES.keys())),
         help="Type of session storage to use",
     )(f)
     f = click.option(
@@ -127,6 +144,16 @@ def shared_template_options(f: Callable) -> Callable:
         is_flag=True,
         help="Include BigQuery Agent Analytics Plugin for observability",
         default=False,
+    )(f)
+    # None means "not specified" -- use the current value.
+    f = click.option(
+        "--agent-gateway/--no-agent-gateway",
+        default=None,
+        help=(
+            "Make the Dockerfile Agent Gateway-ready by trusting the gateway's "
+            "root CA (Agent Runtime only). Required before `agents-cli deploy "
+            "--agent-gateway-egress`"
+        ),
     )(f)
     f = click.option(
         "--base-template",
@@ -254,6 +281,13 @@ def normalize_project_name(project_name: str) -> str:
     default=False,
 )
 @click.option(
+    "--quiet",
+    is_flag=True,
+    hidden=True,
+    help="Internal flag: suppress the banner, the notices and the next steps",
+    default=False,
+)
+@click.option(
     "--locked",
     is_flag=True,
     hidden=True,
@@ -267,6 +301,7 @@ def normalize_project_name(project_name: str) -> str:
     help="Quickstart mode: adk + agent_runtime + prototype, skips prompts",
     default=False,
 )
+@_handle_create_errors
 def create(
     ctx: click.Context,
     project_name: str,
@@ -289,13 +324,21 @@ def create(
     agent_garden: bool = False,
     base_template: str | None = None,
     skip_welcome: bool = False,
+    quiet: bool = False,
     locked: bool = False,
     cli_overrides: dict | None = None,
     bq_analytics: bool = False,
+    agent_gateway: bool | None = None,
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Create GCP-based AI agent projects from templates."""
     console = Console()
+
+    # A quiet run builds a throwaway tree for the three-way merge behind
+    # `scaffold enhance` and `scaffold upgrade`, so nothing it says is addressed
+    # to anyone. Warnings and errors still print.
+    if quiet:
+        skip_welcome = True
 
     # Display welcome banner (unless skipped)
     if not skip_welcome:
@@ -344,11 +387,10 @@ def create(
 
     # Validate project name (for CLI-provided names)
     if len(project_name) > 26:
-        console.print(
-            f"Error: Project name '{project_name}' exceeds 26 characters. Please use a shorter name.",
-            style="bold red",
+        raise click.UsageError(
+            f"Project name '{project_name}' exceeds 26 characters. "
+            "Please use a shorter name."
         )
-        return
 
     project_name = normalize_project_name(project_name)
 
@@ -409,18 +451,14 @@ def create(
             )
         except click.Abort:
             console.print("✋ [red]Operation cancelled.[/red]")
-            return
+            raise
 
         console.print()
     else:
         # Check if project would exist in output directory
         project_path = destination_dir / project_name
         if project_path.exists():
-            console.print(
-                f"Error: Project directory '{project_path}' already exists",
-                style="bold red",
-            )
-            return
+            raise click.UsageError(f"Project directory '{project_path}' already exists")
 
     # Resolve agent name aliases (backwards compatibility)
     agent = template.resolve_agent_alias(agent)
@@ -430,6 +468,9 @@ def create(
     template_source_path = None
     temp_dir_to_clean = None
     remote_spec = None
+    # How to fetch this template again, for enhance and upgrade. A relative
+    # local path would resolve against wherever those are later run from.
+    recorded_spec = None
     agents = template.get_available_agents(deployment_target=deployment_target)
 
     if agent:
@@ -440,6 +481,8 @@ def create(
                 raise click.ClickException(
                     f"Local path not found or not a directory: {local_path}"
                 )
+
+            recorded_spec = f"local@{local_path}"
 
             # Create a temporary directory and copy the local template to it
             temp_dir = tempfile.mkdtemp(prefix="acli_local_template_")
@@ -485,6 +528,7 @@ def create(
                     )
                 )
                 temp_dir_to_clean = str(temp_dir_path)
+                recorded_spec = agent
                 selected_agent = (
                     f"remote_{hash(agent)}"  # Generate unique name for remote template
                 )
@@ -517,7 +561,7 @@ def create(
                         else:
                             raise ValueError(f"Invalid agent number: {agent_num}")
                     except ValueError as err:
-                        raise ValueError(
+                        raise click.UsageError(
                             f"Invalid agent name or number: {agent}"
                         ) from err
 
@@ -569,6 +613,7 @@ def create(
                     )
                 )
                 temp_dir_to_clean = str(temp_dir_path)
+                recorded_spec = agent
                 final_agent = (
                     f"remote_{hash(agent)}"  # Generate unique name for remote template
                 )
@@ -601,15 +646,12 @@ def create(
             # Validate that the base template exists
             if not validate_base_template(base_template):
                 available_templates = get_available_base_templates()
-                console.print(
-                    f"Error: Base template '{base_template}' not found.",
-                    style="bold red",
+                if temp_dir_to_clean:
+                    shutil.rmtree(temp_dir_to_clean, ignore_errors=True)
+                raise click.UsageError(
+                    f"Base template '{base_template}' not found.\n"
+                    f"Available base templates: {', '.join(available_templates)}"
                 )
-                console.print(
-                    f"Available base templates: {', '.join(available_templates)}",
-                    style="yellow",
-                )
-                raise click.Abort()
             cli_overrides["base_template"] = template.resolve_agent_alias(base_template)
 
         # Load remote template config with CLI overrides
@@ -638,6 +680,7 @@ def create(
 
         # Merge configs: remote inherits from and overrides base
         config = remote_template.merge_template_configs(base_config, source_config)
+
         # For remote templates, use the template/ subdirectory as the template source
         template_path = template_source_path / ".template"
     else:
@@ -711,6 +754,13 @@ def create(
     if debug:
         logging.debug(f"Selected deployment target: {final_deployment}")
 
+    if agent_gateway and final_deployment != "agent_runtime":
+        raise click.UsageError(
+            f"--agent-gateway is not supported for deployment target '{final_deployment}'.\n"
+            "  Agent Gateway can only be bound to Agent Runtime deployments.\n"
+            "  Use --deployment-target agent_runtime, or drop --agent-gateway."
+        )
+
     # Session type validation and selection (only for agents that require session management)
     final_session_type = session_type
 
@@ -734,15 +784,15 @@ def create(
         session_type_supported_agents = ("adk",)
 
         if requires_session:
-            if final_deployment == "agent_runtime" and session_type:
-                console.print(
-                    "Error: --session-type cannot be used with agent_runtime deployment target. "
-                    "Agent Runtime handles session management internally.",
-                    style="bold red",
-                )
-                return
-
-            if final_deployment == "none":
+            if final_deployment == "agent_runtime":
+                final_session_type = "none"
+                if session_type:
+                    console.print(
+                        "Warning: --session-type cannot be used with agent_runtime deployment target, it will be unset. "
+                        "Agent Runtime handles session management internally.",
+                        style="yellow",
+                    )
+            elif final_deployment == "none":
                 final_session_type = "in_memory"
             elif final_deployment in ("cloud_run", "gke"):
                 if deployment_agent_name in session_type_supported_agents:
@@ -754,7 +804,7 @@ def create(
                             final_session_type = "in_memory"
                             if not auto_approve:
                                 pass  # strict programmatic: use default silently
-                            else:
+                            elif not quiet:
                                 console.print(
                                     "Info: --session-type not specified. Defaulting to 'in_memory' in auto-approve mode.",
                                     style="yellow",
@@ -807,7 +857,7 @@ def create(
         final_cicd_runner = template.prompt_cicd_runner_selection()
     else:
         final_cicd_runner = "skip"
-        if auto_approve:
+        if auto_approve and not quiet:
             console.print(
                 "Info: --cicd-runner not specified. Defaulting to 'skip' (simple mode) in auto-approve mode.",
                 style="yellow",
@@ -826,6 +876,10 @@ def create(
         region = prompt_region_confirmation(region, agent_garden=agent_garden)
     if debug:
         logging.debug(f"Selected region: {region}")
+
+    from google.agents.cli.deploy._utils import validate_deployment_region
+
+    validate_deployment_region(region, deployment_target)
 
     # GCP Setup
     logging.debug("Setting up GCP...")
@@ -881,6 +935,11 @@ def create(
             final_cli_overrides["settings"] = {}
         final_cli_overrides["settings"]["agent_directory"] = agent_directory
 
+    # `local@.` overlays the current directory onto itself, so the manifest in
+    # the overlay is this project's own and has to survive the copy. Every other
+    # source is a template, whose manifest describes the template.
+    overlay_is_project = isinstance(agent, str) and agent.strip().rstrip("/") == "local@."
+
     try:
         # Process template (handles both local and remote templates)
         template.process_template(
@@ -894,11 +953,16 @@ def create(
             remote_template_path=template_source_path,
             remote_config=config,
             in_folder=in_folder,
+            overlay_is_project=overlay_is_project,
+            # The project records the spec it was fetched from, so enhance and
+            # upgrade can fetch it again.
+            recorded_base_template=recorded_spec if not in_folder else None,
             cli_overrides=final_cli_overrides,
             agent_garden=agent_garden,
             remote_spec=remote_spec,
             google_cloud_project=creds_info.get("project"),
             bq_analytics=bq_analytics,
+            agent_gateway=bool(agent_gateway),
             agent_guidance_filename=agent_guidance_filename,
         )
 
@@ -928,6 +992,11 @@ def create(
                     interactive=interactive,
                 )
 
+    except ValueError as e:
+        # process_template raises ValueError for input the user can fix, so it
+        # gets one line. Any other exception is our bug and keeps its traceback.
+        raise click.ClickException(str(e)) from e
+
     finally:
         # Clean up the temporary directory if one was created
         if temp_dir_to_clean:
@@ -940,6 +1009,12 @@ def create(
                 logging.warning(
                     f"Failed to clean up temporary directory {temp_dir_to_clean}: {e}"
                 )
+
+    # Everything below is the next-steps banner. A quiet run's project lives in
+    # a temp directory that is deleted moments later, so telling the user to cd
+    # into it would be wrong as well as noisy.
+    if quiet:
+        return
 
     if not in_folder:
         project_path = destination_dir / project_name
@@ -978,13 +1053,26 @@ def prompt_region_confirmation(
     default_region: str = "us-east1", agent_garden: bool = False
 ) -> str:
     """Prompt user to confirm or change the default region."""
-    new_region = Prompt.ask(
-        "\n🌍 Enter GCP region (Gemini uses global endpoint)",
-        default=default_region,
-        show_default=True,
-    )
+    import re
 
-    return new_region if new_region else default_region
+    while True:
+        new_region = Prompt.ask(
+            "\n🌍 Enter GCP region for deployment (Gemini model calls default to global endpoint)",
+            default=default_region,
+            show_default=True,
+        ).strip()
+        selected = new_region if new_region else default_region
+        if not re.match(r"^[a-z]+-[a-z]+\d+$", selected.lower()):
+            console.print(
+                f"\n⚠️  '{selected}' is not a valid single regional location. Deployment infrastructure (Cloud Run, Agent Runtime, GKE) requires a single regional location (e.g., 'us-central1', 'europe-west4').",
+                style="yellow",
+            )
+            console.print(
+                "   To route Gemini model calls to multi-region endpoints, you can set GOOGLE_CLOUD_LOCATION in your .env.\n",
+                style="dim",
+            )
+            continue
+        return selected
 
 
 def display_agent_selection(
@@ -1020,9 +1108,9 @@ def display_agent_selection(
         if display_group != current_display_group:
             current_display_group = display_group
             if display_group == "python":
-                header = "\U0001f40d Python"
+                header = "🐍 Python"
             else:
-                header = "\U0001f310 Other Languages"
+                header = "🌐 Other Languages"
             console.print(f"\n  [bold cyan]{header}[/]")
 
         # Align agent names for cleaner display (use display_name if available)
@@ -1034,18 +1122,11 @@ def display_agent_selection(
 
     # Add "More Options" submenu entry
     more_options_num = len(agents) + 1
-    console.print("\n  [bold cyan]\U0001f527 More Options[/]")
+    console.print("\n  [bold cyan]🔧 More Options[/]")
     label = "Browse".ljust(14)
     console.print(
         f"     {more_options_num}. [bold]{label}[/] [dim]BQ agent analytics, community agents, custom templates[/]"
     )
-
-    # Random tips shown ~20% of the time
-    tips = [
-        "\U0001f4a1 [dim]New: use --bq-analytics to log agent events to BigQuery[/]",
-    ]
-    if random.random() < 0.2:
-        console.print(f"\n  {random.choice(tips)}")
 
     choice = IntPrompt.ask(
         "\nEnter the number of your template choice", default=1, show_default=True
@@ -1073,9 +1154,7 @@ def display_more_options_submenu(
     console.print(
         "     3. [bold]Custom URL[/]         [dim]Enter a remote template URL[/]"
     )
-    console.print(
-        "     4. [bold]\u2190 Back[/]             [dim]Return to agent selection[/]"
-    )
+    console.print("     4. [bold]← Back[/]             [dim]Return to agent selection[/]")
 
     choice = IntPrompt.ask(
         "\nEnter the number of your choice", default=1, show_default=True
@@ -1146,7 +1225,7 @@ def display_adk_samples_selection() -> AgentSelectionResult:
         # Add option to go back to local agents
         back_option = len(adk_agents) + 1
         console.print(
-            f"{back_option}. [bold]\u2190 Back to built-in agents[/] - [dim]Return to local agent selection[/]"
+            f"{back_option}. [bold]← Back to built-in agents[/] - [dim]Return to local agent selection[/]"
         )
 
         choice = IntPrompt.ask(

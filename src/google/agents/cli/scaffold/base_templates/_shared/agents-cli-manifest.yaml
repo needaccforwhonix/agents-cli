@@ -1,15 +1,16 @@
-name: "{{cookiecutter.project_name}}"
-acli_version: "{{cookiecutter.package_version}}"
-agent_directory: "{{cookiecutter.agent_directory}}"
-region: "us-east1"
-base_template: "{{cookiecutter.agent_name}}"
-generated_at: "{{cookiecutter.generated_at}}"
-language: "{{cookiecutter.language or 'python'}}"
+name: '{{cookiecutter.project_name}}'
+acli_version: '{{cookiecutter.package_version}}'
+agent_directory: '{{cookiecutter.agent_directory}}'
+region: 'us-east1'
+base_template: '{{cookiecutter.recorded_base_template}}'
+generated_at: '{{cookiecutter.generated_at}}'
+language: '{{cookiecutter.language or "python"}}'
 create_params:
-  deployment_target: "{{cookiecutter.deployment_target}}"
-  session_type: "{{cookiecutter.session_type or 'none'}}"
-  cicd_runner: "{{cookiecutter.cicd_runner}}"
+  deployment_target: '{{cookiecutter.deployment_target}}'
+  session_type: '{{cookiecutter.session_type or "none"}}'
+  cicd_runner: '{{cookiecutter.cicd_runner}}'
   {% if cookiecutter.is_a2a -%}
   is_a2a: true
   {%- endif %}
-  agent_guidance_filename: "{{cookiecutter.agent_guidance_filename}}"
+  agent_gateway: {{cookiecutter.agent_gateway}}
+  agent_guidance_filename: '{{cookiecutter.agent_guidance_filename}}'

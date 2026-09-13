@@ -19,7 +19,7 @@ on:
     branches:
       - main
     paths:
-      - 'agent/**'
+      - '{{cookiecutter.agent_directory}}/**'
       - 'e2e/**'
       - 'deployment/**'
       - 'go.mod'
@@ -84,7 +84,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Get ID Token
         id: id-token
@@ -132,7 +132,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Run Load Tests
         run: |

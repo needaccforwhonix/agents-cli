@@ -23,9 +23,9 @@ from typing import Any
 
 import click
 from packaging import version as pkg_version
-from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 
+from google.agents.cli._output import Console
 from google.agents.cli._project import (
     ProjectConfig,
     find_project_config,
@@ -33,6 +33,7 @@ from google.agents.cli._project import (
 from google.agents.cli._runner import run_resolved
 from google.agents.cli._tools import ToolNotFoundError, require_tool
 
+from ..utils import remote_template
 from ..utils.backup import create_project_backup
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.language import (
@@ -166,6 +167,8 @@ def get_display_params_from_config(project_config: ProjectConfig) -> dict[str, A
     # Add create_params
     create_params = project_config.create_params
     for key, value in create_params.items():
+        # `framework` is recorded by whoever owns `scaffold create`; it is not a
+        # value enhance can re-apply, so showing it as saved config is noise.
         if _should_skip_config_value(value):
             continue
         display_params[key] = value
@@ -472,16 +475,20 @@ def display_base_template_selection(current_base: str) -> str:
 
 
 def display_agent_directory_selection(
-    current_dir: pathlib.Path, detected_directory: str, base_template: str | None = None
+    current_dir: pathlib.Path,
+    detected_directory: str,
+    language: str,
+    base_template: str | None = None,
 ) -> str:
     """Display available directories and prompt for agent directory selection."""
     while True:
+        agent_file_hint = get_language_config(language).get("agent_file")
         console.print()
         console.print("📁 [bold]Agent Directory Selection[/bold]")
         console.print()
         console.print("Your project needs an agent directory containing:")
         console.print(
-            "  • [cyan]agent.py[/cyan] with [cyan]root_agent[/cyan] variable, or"
+            f"  • [cyan]{agent_file_hint}[/cyan] file with root agent defined, or"
         )
         console.print("  • [cyan]root_agent.yaml[/cyan] (YAML config agent)")
         console.print()
@@ -554,7 +561,7 @@ def display_agent_directory_selection(
                         "Enter custom agent directory name", default=detected_directory
                     )
                     try:
-                        validate_agent_directory_name(custom_dir)
+                        validate_agent_directory_name(custom_dir, language=language)
                         return custom_dir
                     except ValueError as e:
                         console.print(f"[bold red]Error:[/] {e}", style="bold red")
@@ -562,7 +569,7 @@ def display_agent_directory_selection(
             else:
                 # Validate existing directory selection as well
                 try:
-                    validate_agent_directory_name(selected)
+                    validate_agent_directory_name(selected, language=language)
                     return selected
                 except ValueError as e:
                     console.print(f"[bold red]Error:[/] {e}", style="bold red")
@@ -607,9 +614,14 @@ def _build_enhance_create_args(
     # ``deployment_target`` is exempt from the skip-sentinel check because
     # users legitimately switch targets via ``enhance --deployment-target X``
     # and the value happens to share a name with sentinel-skip patterns
-    # used elsewhere (e.g. "none", "skip").
+    # used elsewhere (e.g. "none", "skip"). ``agent_gateway`` is exempt
+    # because it is tri-state: False means "turn it off", not "unset".
     for key, value in cli_overrides.items():
-        if key != "deployment_target" and _should_skip_config_value(value):
+        if (
+            key != "deployment_target"
+            and key != "agent_gateway"
+            and _should_skip_config_value(value)
+        ):
             continue
 
         # base_template maps to --agent in the create command
@@ -630,18 +642,11 @@ def _build_enhance_create_args(
         # Add the override
         if value is True:
             args.append(arg_name)
-        elif value is not False and value is not None:
+        elif value is False:
+            # Only reachable for tri-state flags, which all declare a --no- form.
+            args.append(f"--no-{key.replace('_', '-')}")
+        elif value is not None:
             args.extend([arg_name, str(value)])
-
-    # Strip --session-type when deploying to agent_runtime (it handles sessions internally)
-    if "--deployment-target" in args:
-        dt_idx = args.index("--deployment-target")
-        if dt_idx + 1 < len(args) and args[dt_idx + 1] == "agent_runtime":
-            while "--session-type" in args:
-                i = args.index("--session-type")
-                args.pop(i)
-                if i < len(args) and not args[i].startswith("--"):
-                    args.pop(i)
 
     return args
 
@@ -694,10 +699,6 @@ def _backfill_create_params_from_config(
             if key != "deployment_target" and _should_skip_config_value(saved[key]):
                 continue
             result[key] = saved[key]
-
-    # agent_runtime handles sessions via Vertex AI Session Service
-    if result.get("deployment_target") == "agent_runtime":
-        result["session_type"] = None
 
     return result
 
@@ -756,12 +757,17 @@ def _run_smart_merge(
     def _update_metadata(proj_dir: pathlib.Path, lang: str) -> None:
         if not cli_overrides:
             return
-        metadata_updates = {
+        metadata_updates: dict[str, Any] = {
             k: v
             for k, v in cli_overrides.items()
             if isinstance(v, str)
             and (k == "deployment_target" or not _should_skip_config_value(v))
         }
+        # agent_gateway is a bool, so it needs recording separately: the
+        # comprehension above only keeps strings (which keeps non-create_params
+        # overrides such as ``prototype`` out of the manifest).
+        if "agent_gateway" in cli_overrides:
+            metadata_updates["agent_gateway"] = cli_overrides["agent_gateway"]
         stale_keys = _stale_manifest_keys_for_target(cli_overrides, project_config)
 
         if metadata_updates or stale_keys:
@@ -769,7 +775,6 @@ def _run_smart_merge(
                 proj_dir,
                 metadata_updates,
                 acli_version=get_current_version(),
-                language=lang,
                 remove_keys=stale_keys or None,
             )
 
@@ -860,15 +865,26 @@ def enhance(
     agent_directory: str | None,
     skip_welcome: bool = False,
     bq_analytics: bool = False,
+    agent_gateway: bool | None = None,
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Enhance your existing project with deployment, CI/CD, or RAG scaffolding.
 
-    Applies agents-cli templates in-place to an existing project directory,
-    adding infrastructure files without touching your agent logic.
+    Applies a template in-place, adding infrastructure files without touching
+    your agent logic. It always enhances the current directory.
 
-    Run from inside your project directory (pass . as the path) or point to it
-    explicitly. Use --dry-run to preview changes before applying them.
+    TEMPLATE_PATH says which template to apply, not which project to enhance.
+    It defaults to the current directory, which re-renders the scaffolding from
+    the base template and puts your files back on top.
+
+    If the project has an agents-cli-manifest.yaml, the template recorded there
+    is re-applied and TEMPLATE_PATH is ignored. Pass a local directory or a
+    remote spec (org/repo@tag) for a project agents-cli did not create.
+
+    --base-template is separate. It names a base template this CLI ships, which
+    sits underneath whatever TEMPLATE_PATH supplies.
+
+    Use --dry-run to preview changes before applying them.
     """
 
     # Display welcome banner for enhance command (unless skipped by nested command)
@@ -895,13 +911,17 @@ def enhance(
         cli_override_args["prototype"] = prototype
     if agent_guidance_filename != "GEMINI.md":
         cli_override_args["agent_guidance_filename"] = agent_guidance_filename
+    if agent_gateway is not None:
+        cli_override_args["agent_gateway"] = agent_gateway
 
     # Smart-merge is the default when saved config exists (unless --force).
     # Skip if running in subprocess with saved config (subprocess re-execution
     # replays the same params, so smart-merge would compare identical templates).
     is_saved_config_subprocess = os.environ.get(_ENV_USING_SAVED_CONFIG) == "1"
     has_cli_overrides = any(
-        k == "deployment_target" or not _should_skip_config_value(v)
+        k == "deployment_target"
+        or k == "agent_gateway"
+        or not _should_skip_config_value(v)
         for k, v in cli_override_args.items()
     )
 
@@ -910,6 +930,16 @@ def enhance(
             "[bold red]Error:[/bold red] --dry-run is not compatible with --force mode."
         )
         return
+
+    if base_template and not validate_base_template(base_template):
+        hint = (
+            f"  To apply a fetched template, pass it positionally: agents-cli scaffold enhance {base_template}"
+            if remote_template.is_template_spec(base_template)
+            else f"  Available: {', '.join(get_available_base_templates())}"
+        )
+        raise click.ClickException(
+            f"--base-template takes a template this CLI ships, not '{base_template}'.\n{hint}"
+        )
 
     if not force and not is_saved_config_subprocess:
         project_config = find_project_config(current_dir)
@@ -1037,18 +1067,6 @@ def enhance(
     # Resolve base template aliases (backwards compatibility)
     base_template = resolve_agent_alias(base_template)
 
-    # Validate base template if provided
-    if base_template and not validate_base_template(base_template):
-        available_templates = get_available_base_templates()
-        console.print(
-            f"Error: Base template '{base_template}' not found.", style="bold red"
-        )
-        console.print(
-            f"Available base templates: {', '.join(available_templates)}",
-            style="yellow",
-        )
-        return
-
     # Determine project name
     if name:
         project_name = name
@@ -1133,8 +1151,13 @@ def enhance(
                     f"✅ Selected base template: [cyan]{selected_base_template}[/cyan]"
                 )
                 console.print()
-        elif not base_template:
-            # Auto-select the detected base template in non-interactive mode
+        elif not base_template and not remote_template.is_template_spec(
+            original_base_template_name
+        ):
+            # Auto-select the detected base template in non-interactive mode.
+            # A project made from a fetched template records that template's
+            # spec here, which names the source, not a base layer this CLI
+            # ships, so leave it for the template itself to declare.
             base_template = original_base_template_name
 
         # Reload config with potential base template override
@@ -1167,11 +1190,16 @@ def enhance(
                 is_java_project = True
             elif acli_config.language == "typescript":
                 is_ts_project = True
+        elif not (is_go_project or is_java_project or is_ts_project):
+            # No manifest and no --base-template language hint, so every
+            # language-dependent default below falls back to Python.
+            console.print(
+                "[dim]No saved metadata found - defaulting to Python as project "
+                "language.[/dim]"
+            )
 
         # Determine agent directory: CLI param > config detection > language default
-        if is_go_project:
-            detected_agent_directory = "agent"
-        elif is_java_project:
+        if is_java_project:
             detected_agent_directory = "src/main/java"
         else:
             detected_agent_directory = "app"
@@ -1211,8 +1239,9 @@ def enhance(
 
         # Interactive agent directory selection if not provided via CLI and in interactive mode
         if not agent_directory and interactive:
+            selection_language = acli_config.language if acli_config else "python"
             selected_agent_directory = display_agent_directory_selection(
-                current_dir, detected_agent_directory, base_template
+                current_dir, detected_agent_directory, selection_language, base_template
             )
             final_agent_directory = selected_agent_directory
             console.print(
@@ -1379,8 +1408,13 @@ def enhance(
             "deployment_target": deployment_target,
             "cicd_runner": cicd_runner,
             "session_type": session_type,
+            "agent_gateway": agent_gateway,
         },
     )
+
+    # Read before the render: create rewrites the manifest in place.
+    existing_config = find_project_config(pathlib.Path.cwd())
+    recorded_base = existing_config.base_template if existing_config else None
 
     # Call the create command with in-folder mode enabled
     ctx.invoke(
@@ -1407,5 +1441,12 @@ def enhance(
         skip_welcome=True,  # Skip welcome message since enhance shows its own
         cli_overrides=final_cli_overrides if final_cli_overrides else None,
         bq_analytics=bq_analytics,
+        agent_gateway=effective_create_params["agent_gateway"],
         agent_guidance_filename=agent_guidance_filename,
     )
+
+    # An in-folder render rewrites the manifest from the template it rendered,
+    # which for a fetched template is a synthesized local name. The project came
+    # from the recorded spec and still has to re-fetch it next time.
+    if recorded_base and remote_template.is_template_spec(recorded_base):
+        update_acli_metadata(pathlib.Path.cwd(), {}, base_template=recorded_base)

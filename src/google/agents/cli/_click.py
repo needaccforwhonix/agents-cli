@@ -22,6 +22,8 @@ from typing import Any
 
 import click
 
+from google.agents.cli._experiments import resolve_experiment
+
 
 class LazyGroup(click.Group):
     """Click group that defers importing subcommand modules until needed.
@@ -46,14 +48,54 @@ class LazyGroup(click.Group):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._lazy_commands: dict[str, tuple[str, str]] = {}
+        # name -> experiment label
+        self._experiment_gates: dict[str, str] = {}
+        self._overrides: dict[str, click.Command] = {}
 
-    def add_lazy_command(self, name: str, import_path: str, short_help: str) -> None:
+    def add_lazy_command(
+        self,
+        name: str,
+        import_path: str,
+        short_help: str,
+        experiment: str | None = None,
+    ) -> None:
+        """Register a subcommand for lazy loading.
+
+        If `experiment` is given, the command is only listed and invocable when
+        that experiment resolves truthy; otherwise it behaves as if it were
+        never registered (hidden from --help, "No such command" on invoke).
+
+        The experiment gate is resolved per invocation in `list_commands`/`get_command`,
+        not at this registration call: `main` is built once at import, so
+        guarding registration would freeze visibility before a unit test could
+        override the experiment.
+        """
         self._lazy_commands[name] = (import_path, short_help)
+        if experiment is not None:
+            self._experiment_gates[name] = experiment
+
+    def _is_visible(self, name: str) -> bool:
+        """True if `name` is not hidden via experiment."""
+        label = self._experiment_gates.get(name)
+        if label is None:
+            return True
+        return bool(resolve_experiment(label))
 
     def list_commands(self, ctx: click.Context) -> list[str]:
-        return sorted(set(super().list_commands(ctx)) | set(self._lazy_commands))
+        names = (
+            set(super().list_commands(ctx))
+            | set(self._lazy_commands)
+            | set(self._overrides)
+        )
+        return sorted(filter(self._is_visible, names))
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        # Overrides are consulted only after the visibility check, so an installed
+        # extension cannot expose a command that is gated off.
+        if not self._is_visible(cmd_name):
+            return None
+        if cmd_name in self._overrides:
+            return self._overrides[cmd_name]
         if cmd_name in self._lazy_commands and cmd_name not in self.commands:
             import_path, _ = self._lazy_commands[cmd_name]
             module_path, attr = import_path.split(":")
@@ -65,6 +107,9 @@ class LazyGroup(click.Group):
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         rows: list[tuple[str, str]] = []
         for name in self.list_commands(ctx):
+            if name in self._overrides:
+                rows.append((name, self._overrides[name].get_short_help_str(limit=1000)))
+                continue
             if name in self.commands:
                 # Don't truncate — Click's default of 45 would cut our docstring summaries.
                 rows.append((name, self.commands[name].get_short_help_str(limit=1000)))

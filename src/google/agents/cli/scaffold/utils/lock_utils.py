@@ -14,6 +14,7 @@
 
 """Utilities for managing uv lock files and dependencies."""
 
+import logging
 import pathlib
 from pathlib import Path
 from typing import NamedTuple
@@ -31,6 +32,37 @@ class AgentConfig(NamedTuple):
 def _scaffold_root() -> pathlib.Path:
     """Return the root of the scaffold package directory."""
     return pathlib.Path(__file__).resolve().parent.parent
+
+
+EMPTY_TAG = "empty"
+
+
+def _agent_tags(agent_name: str) -> list[str]:
+    """Read `settings.tags` from an agent's templateconfig, [] if unreadable."""
+    config_file = (
+        _scaffold_root() / "agents" / agent_name / ".template" / "templateconfig.yaml"
+    )
+    if not config_file.exists():
+        return []
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        logging.warning("%s: could not read tags (%s).", config_file, e)
+        return []
+    tags = config.get("settings", {}).get("tags", [])
+    return [t for t in tags if isinstance(t, str)]
+
+
+def is_empty_agent(agent_name: str, tags: list[str] | None = None) -> bool:
+    """True for the framework-neutral empty templates.
+
+    They ship no agent or dependencies of their own — a framework template
+    supplies the pyproject and lock — so they generate and scaffold no lock.
+    Identified by the `empty` tag in templateconfig rather than by name, so the
+    two can be renamed independently.
+    """
+    return EMPTY_TAG in (tags if tags is not None else _agent_tags(agent_name))
 
 
 def get_agent_configs(
@@ -62,6 +94,10 @@ def get_agent_configs(
 
         agent_name = agent_dir.name
         settings = config.get("settings", {})
+        # The empty templates carry no dependencies of their own, so there is
+        # nothing to lock; a framework template brings its own pyproject and lock.
+        if is_empty_agent(agent_name, settings.get("tags", [])):
+            continue
 
         agent_configs[agent_name] = settings
 

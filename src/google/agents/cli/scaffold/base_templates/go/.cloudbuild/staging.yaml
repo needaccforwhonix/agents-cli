@@ -68,7 +68,7 @@ steps:
         echo $(gcloud auth print-identity-token -q) > id_token.txt
 
   # Load Testing (Go-based)
-  - name: "golang:1.24"
+  - name: "golang:1.26"
     id: load_test
     entrypoint: /bin/bash
     args:

@@ -25,8 +25,10 @@ class Experiment(NamedTuple):
 
 
 # Central registry of experiments: new experiment flags get added here.
-# No experiments are currently registered.
-_REGISTRY: dict[str, Experiment] = {}
+_REGISTRY: dict[str, Experiment] = {
+    # Hides the `build` command until Go (compiled-language) support launches.
+    "build_command": Experiment("build_command", bool, False),
+}
 
 
 def resolve_experiment(label: str) -> Any:

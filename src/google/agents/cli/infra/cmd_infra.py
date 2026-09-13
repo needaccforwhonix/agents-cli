@@ -26,6 +26,7 @@ def infra_group():
     \b
     Subcommands:
       single-project  Optional — custom infrastructure for a single GCP project
+      show            Show what single-project provisioned
       cicd            Set up CI/CD pipelines and multi-environment infrastructure
     """
     pass
@@ -35,6 +36,11 @@ infra_group.add_lazy_command(
     "single-project",
     "google.agents.cli.infra.cmd_infra_single_project:cmd_infra_single_project",
     "Provision single-project infrastructure (optional).",
+)
+infra_group.add_lazy_command(
+    "show",
+    "google.agents.cli.infra.cmd_infra_show:cmd_infra_show",
+    "Show the outputs of the single-project Terraform root.",
 )
 infra_group.add_lazy_command(
     "cicd",

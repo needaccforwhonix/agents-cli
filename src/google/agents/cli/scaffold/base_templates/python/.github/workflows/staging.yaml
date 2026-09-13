@@ -66,7 +66,6 @@ jobs:
       - name: Build and Push Docker Image
         run: |
           docker build -t {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
-            --build-arg COMMIT_SHA={% raw %}${{ github.sha }}{% endraw %} \
             .
           docker push {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %}
 
@@ -80,7 +79,8 @@ jobs:
 {%- endif %}
             --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
             --region {% raw %}${{ vars.REGION }}{% endraw %} \
-            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %}
+            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %}"
 
       - name: Fetch Staging Service URL
         id: fetch-url
@@ -105,7 +105,6 @@ jobs:
       - name: Build and Push Docker Image
         run: |
           docker build -t {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
-            --build-arg COMMIT_SHA={% raw %}${{ github.sha }}{% endraw %} \
             .
           docker push {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %}
 
@@ -120,7 +119,8 @@ jobs:
             --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
             --region {% raw %}${{ vars.REGION }}{% endraw %} \
             --cluster-name {% raw %}${{ vars.GKE_CLUSTER_NAME_STAGING }}{% endraw %} \
-            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %}
+            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %}"
 
       - name: Get GKE Credentials
         uses: 'google-github-actions/get-gke-credentials@v2'
@@ -152,7 +152,7 @@ jobs:
             --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
             --region {% raw %}${{ vars.REGION }}{% endraw %} \
             --service-account={% raw %}${{ vars.APP_SERVICE_ACCOUNT_STAGING }}{% endraw %} \
-            --update-env-vars="COMMIT_SHA={% raw %}${{ github.sha }}{% endraw %},LOGS_BUCKET_NAME={% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}"
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %},LOGS_BUCKET_NAME={% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}"
 
       - name: Fetch Auth Token
         id: fetch-token

@@ -16,11 +16,18 @@
 
 import logging
 import shutil
+from pathlib import Path
 
 import click
 
-from google.agents.cli._project import find_project_root
+from google.agents.cli import _tools
+from google.agents.cli._project import (
+    chdir_project_root,
+    find_project_root,
+    read_project_config,
+)
 from google.agents.cli._runner import run
+from google.agents.cli.scaffold.utils.language import dispatch_language
 
 
 @click.command("install")
@@ -35,16 +42,71 @@ from google.agents.cli._runner import run
     help="Assert that uv.lock is up to date with pyproject.toml; fail instead of updating it.",
 )
 def cmd_install(clean: bool, locked: bool):
-    """Install project dependencies.
+    """Install project dependencies."""
+    chdir_project_root()
+    # Re-materialize any missing extension working copies from their pinned
+    # SHAs, before the dispatch: the loader tells a user with a missing copy to
+    # run this command, and a language with no install handler raises below.
+    # Never advances pins.
+    from google.agents.cli.extension._sync import sync_extensions
 
-    Runs: uv sync
+    sync_extensions(find_project_root(Path.cwd()))
+
+    handler = dispatch_language(
+        "install", LANGUAGE_HANDLERS, read_project_config().language
+    )
+    handler(clean=clean, locked=locked)
+
+
+def _install_python(*, clean: bool, locked: bool) -> None:
+    """Install Python dependencies with ``uv sync``.
+
+    When ``locked`` is true, runs ``uv sync --locked`` so a stale uv.lock fails the command instead
+    of being updated.
+    When ``clean`` is true, deletes the project's ``.venv``.
     """
+    # Resolve uv up front: --clean deletes the venv. Fail quickly here (before
+    # any destructive work) rather than when calling uv.
+    _tools.require_tool("uv")
     if clean:
         _delete_venv()
     cmd = ["uv", "sync"]
     if locked:
         cmd.append("--locked")
     run(cmd, check_err_msg="Failed to install dependencies")
+
+
+def _install_go(*, clean: bool, locked: bool) -> None:
+    """Install Go dependencies with ``go mod tidy``.
+
+    ``locked`` verifies go.mod/go.sum are current with ``go mod tidy -diff``
+    (then downloads deps) instead of updating them.
+    ``clean`` has no Go equivalent (there is no per-project environment to delete),
+    so it is ignored with a warning rather than silently accepted.
+    """
+    if clean:
+        logging.warning("--clean does not apply for Go projects, ignoring.")
+    if locked:
+        # -diff exits with non-zero code if go.mod/go.sum are stale, without modifying them.
+        # Later `go mod download` will pull in the missing dependencies.
+        run(
+            ["go", "mod", "tidy", "-diff"],
+            check_err_msg=(
+                "go.mod/go.sum are out of date; rerun without --locked to update them"
+            ),
+        )
+        run(["go", "mod", "download"], check_err_msg="Failed to download dependencies")
+        return
+    run(["go", "mod", "tidy"], check_err_msg="Failed to install dependencies")
+
+
+# `None` = not supported yet; dispatch_language raises a clear error.
+LANGUAGE_HANDLERS = {
+    "python": _install_python,
+    "go": _install_go,
+    "java": None,
+    "typescript": None,
+}
 
 
 def _delete_venv():

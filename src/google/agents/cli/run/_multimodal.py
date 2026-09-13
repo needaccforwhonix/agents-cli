@@ -15,11 +15,11 @@
 """Multimodal helpers for building message parts from files."""
 
 import base64
+import logging
 import mimetypes
 from pathlib import Path
 
-import click
-from a2a.types import FilePart, FileWithBytes, Part, TextPart
+from a2a.types import Part
 
 # Warn when a file exceeds this size (bytes).
 _SIZE_WARNING_THRESHOLD = 20 * 1024 * 1024  # 20 MB
@@ -37,13 +37,11 @@ def build_a2a_parts(message: str, files: tuple[str, ...] = ()) -> list[Part]:
     """
     parts: list[Part] = []
     if message:
-        parts.append(Part(root=TextPart(text=message)))
+        parts.append(Part(text=message))
 
     for file_path in files:
-        data, mime_type = _read_and_encode(file_path)
-        parts.append(
-            Part(root=FilePart(file=FileWithBytes(bytes=data, mime_type=mime_type)))
-        )
+        data, mime_type = _read_file_raw(file_path)
+        parts.append(Part(raw=data, media_type=mime_type, filename=Path(file_path).name))
 
     return parts
 
@@ -65,7 +63,7 @@ def build_adk_sse_parts(message: str, files: tuple[str, ...] = ()) -> list[dict]
 
     for file_path in files:
         data, mime_type = _read_and_encode(file_path)
-        parts.append({"inline_data": {"data": data, "mime_type": mime_type}})
+        parts.append({"inlineData": {"data": data, "mimeType": mime_type}})
 
     return parts
 
@@ -99,22 +97,31 @@ def build_agent_runtime_message(message: str, files: tuple[str, ...] = ()) -> st
     return {"parts": parts}
 
 
+def _read_file_raw(file_path: str) -> tuple[bytes, str]:
+    """Read a file's raw bytes and detect its MIME type.
+
+    Returns:
+        Tuple of (raw_bytes, mime_type).
+    """
+    path = Path(file_path)
+    size = path.stat().st_size
+    if size > _SIZE_WARNING_THRESHOLD:
+        logging.warning(
+            "%s is %.1f MB — large files may cause slow uploads or timeouts.",
+            path.name,
+            size / 1024 / 1024,
+        )
+
+    raw = path.read_bytes()
+    mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return raw, mime_type
+
+
 def _read_and_encode(file_path: str) -> tuple[str, str]:
     """Read a file, base64-encode it, and detect its MIME type.
 
     Returns:
         Tuple of (base64_encoded_data, mime_type).
     """
-    path = Path(file_path)
-    size = path.stat().st_size
-    if size > _SIZE_WARNING_THRESHOLD:
-        click.echo(
-            f"Warning: {path.name} is {size / 1024 / 1024:.1f} MB — "
-            "large files may cause slow uploads or timeouts.",
-            err=True,
-        )
-
-    raw = path.read_bytes()
-    encoded = base64.b64encode(raw).decode("ascii")
-    mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-    return encoded, mime_type
+    raw, mime_type = _read_file_raw(file_path)
+    return base64.b64encode(raw).decode("ascii"), mime_type

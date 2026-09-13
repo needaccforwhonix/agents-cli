@@ -16,13 +16,19 @@
 
 import random
 import shlex
+import shutil
 from pathlib import Path
 
 import click
 
 from google.agents.cli._runner import run
 from google.agents.cli._skills_check import SKILLS_NPX_PACKAGE
-from google.agents.cli._tools import run_npx_skills
+from google.agents.cli._tools import DEFAULT_SKILLS_SOURCE, run_npx_skills
+from google.agents.cli.skills._bundle import (
+    SKILL_BUNDLE_DIR,
+    get_bundled_skills_dir,
+    is_skill_dir,
+)
 
 _MOTTOS = [
     "Give your coding agent the power to build ADK projects.",
@@ -31,8 +37,6 @@ _MOTTOS = [
     "Agents skills, installed in seconds.",
     "Your coding agent just got an upgrade.",
 ]
-
-_DEFAULT_SKILLS_SOURCE = "https://github.com/google/agents-cli"
 
 
 def _print_logo():
@@ -75,6 +79,106 @@ def _get_source_root():
     return None
 
 
+def _build_skills_args(source, *, workspace, agent):
+    """Build the ``npx skills add`` argument list for ``source``."""
+    args = ["add", source, "-y"]
+    if "all" in agent:
+        args.append("--all")
+    elif agent:
+        for a in agent:
+            args.extend(["--agent", a])
+    if not workspace:
+        args.append("-g")
+    return args
+
+
+def _skills_store_dir(*, workspace):
+    """Return the canonical skills store (global home or workspace-relative)."""
+    base = Path.cwd() if workspace else Path.home()
+    return base / ".agents" / "skills"
+
+
+def _display_path(path):
+    """Render ``path`` with the home directory collapsed to ``~`` for output."""
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
+def _copy_bundled_skills(bundled_dir, dest_root):
+    """Copy every bundled skill into ``dest_root``.
+
+    Returns the number of skills copied. Existing copies are replaced so the
+    store always reflects the version shipped with this CLI.
+    """
+    dest_root.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for skill in sorted(bundled_dir.iterdir()):
+        if not is_skill_dir(skill):
+            continue
+        target = dest_root / skill.name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(skill, target)
+        count += 1
+    return count
+
+
+def _install_skills(remote_source, *, workspace, agent, allow_fallback):
+    """Install skills, falling back progressively when the remote path fails.
+
+    1. ``npx skills add`` from ``remote_source`` (the GitHub repo by default,
+       which requires ``git`` and network access).
+    2. ``npx skills add`` from the skills bundled with this CLI (no ``git`` or
+       network needed).
+    3. Copy the bundled skills straight into the ``.agents/skills`` store and
+       warn the user.
+
+    Fallbacks (2 and 3) are only attempted when ``allow_fallback`` is true — an
+    explicit ``--skills-source`` disables them so the user's chosen source is
+    never silently swapped for the bundled copy.
+    """
+
+    args = _build_skills_args(remote_source, workspace=workspace, agent=agent)
+    bundled_dir = get_bundled_skills_dir() if allow_fallback else None
+
+    # Remote (or explicitly requested) source
+    try:
+        run_npx_skills(args, "Installing skills")
+        return None
+    except click.ClickException:
+        if bundled_dir is None:
+            raise
+        click.secho(f"  Could not install skills from {remote_source}.", fg="yellow")
+        click.secho("  Falling back to the skills bundled with this CLI.", dim=True)
+
+    # Bundled skills via npx (skips a redundant identical run)
+    if bundled_dir.resolve() != Path(remote_source).resolve():
+        local_args = _build_skills_args(
+            str(bundled_dir), workspace=workspace, agent=agent
+        )
+        try:
+            run_npx_skills(local_args, "Installing bundled skills")
+            return None
+        except click.ClickException:
+            click.secho("  Could not install bundled skills via npx skills.", fg="yellow")
+
+    # Copy the bundled skills directly (no npx / git needed)
+    dest_root = _skills_store_dir(workspace=workspace)
+    copied = _copy_bundled_skills(bundled_dir, dest_root)
+    click.secho(
+        f"  ⚠️  Installed {copied} skills by copying them into {_display_path(dest_root)} "
+        "(npx skills was unavailable).",
+        fg="yellow",
+    )
+    click.secho(
+        "     'agents-cli update' may not manage these copied skills; re-run "
+        "'agents-cli setup' once git and npx are available.",
+        dim=True,
+    )
+
+
 def _check_legacy_skills():
     """Check for legacy ADK skills and warn the user if found."""
     # ── Legacy Skills Detection ──
@@ -84,44 +188,42 @@ def _check_legacy_skills():
 
         # Run raw command to get all skills without filtering
         result = run(
-            ["npx", "-y", "skills", "list", "--json"],
+            ["npx", "-y", SKILLS_NPX_PACKAGE, "list", "--json"],
             capture=True,
-            check=False,
             timeout=15,
         )
-        if result.returncode == 0:
-            installed_skills = json.loads(result.stdout)
-            legacy_skills = {
-                "adk-cheatsheet",
-                "adk-deploy-guide",
-                "adk-dev-guide",
-                "adk-eval-guide",
-                "adk-observability-guide",
-                "adk-scaffold",
-            }
+        installed_skills = json.loads(result.stdout)
+        legacy_skills = {
+            "adk-cheatsheet",
+            "adk-deploy-guide",
+            "adk-dev-guide",
+            "adk-eval-guide",
+            "adk-observability-guide",
+            "adk-scaffold",
+        }
 
-            found_legacy = []
-            for skill in installed_skills:
-                name = skill.get("name")
-                if name in legacy_skills:
-                    found_legacy.append(name)
+        found_legacy = []
+        for skill in installed_skills:
+            name = skill.get("name")
+            if name in legacy_skills:
+                found_legacy.append(name)
 
-            if found_legacy:
-                click.secho(
-                    f"\n⚠️  Warning: Found legacy ADK skills installed: {', '.join(found_legacy)}",
-                    fg="yellow",
-                )
-                click.secho(
-                    "     These may conflict with the new `agents-cli` skills.",
-                    fg="yellow",
-                )
-                click.secho(
-                    "     We suggest you uninstall them to avoid confusion, e.g.:",
-                    dim=True,
-                )
-                for name in found_legacy:
-                    click.secho(f"     npx skills remove {name}", dim=True)
-                click.echo()
+        if found_legacy:
+            click.secho(
+                f"\n⚠️  Warning: Found legacy ADK skills installed: {', '.join(found_legacy)}",
+                fg="yellow",
+            )
+            click.secho(
+                "     These may conflict with the new `agents-cli` skills.",
+                fg="yellow",
+            )
+            click.secho(
+                "     We suggest you uninstall them to avoid confusion, e.g.:",
+                dim=True,
+            )
+            for name in found_legacy:
+                click.secho(f"     npx skills remove {name}", dim=True)
+            click.echo()
     except Exception as e:
         # Don't fail the setup if the check fails
         logging.warning("Could not check for legacy skills: %s", e)
@@ -196,10 +298,10 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
 
     scope = "workspace" if workspace else "global"
 
-    source = _DEFAULT_SKILLS_SOURCE
+    source = DEFAULT_SKILLS_SOURCE
     if dev and not skills_source:
         # In dev mode, use skills from the local repo checkout
-        source = str(Path.cwd() / "skills")
+        source = str(SKILL_BUNDLE_DIR)
     elif skills_source:
         source_path = Path(skills_source)
         # Only resolve to an absolute path if the source is a local file/directory
@@ -208,14 +310,7 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
             source = str(source_path.resolve())
         else:
             source = skills_source
-    args = ["add", source, "-y"]
-    if "all" in agent:
-        args.append("--all")
-    elif agent:
-        for a in agent:
-            args.extend(["--agent", a])
-    if not workspace:
-        args.append("-g")
+    args = _build_skills_args(source, workspace=workspace, agent=agent)
 
     # ── Dry Run ──
     if dry_run:
@@ -229,21 +324,21 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
                 )
             click.echo("  Would install agents-cli (editable):")
             click.secho(
-                f"  \u25b8 uv tool install --force --editable {project_root}",
+                f"  ▸ uv tool install --force --editable {project_root}",
                 fg="cyan",
                 dim=True,
             )
         else:
             click.echo("  Would install agents-cli:")
             click.secho(
-                "  \u25b8 uv tool install google-agents-cli",
+                "  ▸ uv tool install google-agents-cli",
                 fg="cyan",
                 dim=True,
             )
         click.echo()
         click.echo("  Would install skills:")
         full_args = ["npx", "-y", SKILLS_NPX_PACKAGE, *args]
-        click.secho(f"  \u25b8 {shlex.join(full_args)}", fg="cyan", dim=True)
+        click.secho(f"  ▸ {shlex.join(full_args)}", fg="cyan", dim=True)
         click.echo(f"  Scope: {scope}")
         # Temporary compatibility step (see TODO at the real linking call below).
         if not workspace and (Path.home() / ".gemini").is_dir():
@@ -353,7 +448,12 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
     # ── Legacy Skills Detection ──
     _check_legacy_skills()
 
-    summary_lines = run_npx_skills(args, "Installing skills")
+    _install_skills(
+        source,
+        workspace=workspace,
+        agent=agent,
+        allow_fallback=not skills_source,
+    )
 
     # ── Antigravity skill links ──
     # Temporary until npx skills supports Antigravity's IDE / CLI / 2.0 paths:
@@ -392,12 +492,7 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
         click.echo("  CLI:    Not installed (run: uv tool install google-agents-cli)")
 
     # Skills status
-    if summary_lines:
-        click.echo(f"  Skills: {summary_lines[0]}")
-        for line in summary_lines[1:]:
-            click.echo(f"          {line}")
-    else:
-        click.echo("  Skills: Installed")
+    click.echo("  Skills: Installed")
     click.echo(f"  Scope:  {scope}")
 
     click.echo()

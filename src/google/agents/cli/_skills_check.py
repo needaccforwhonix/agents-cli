@@ -25,7 +25,7 @@ import click
 import yaml
 
 # Pin the skills npm package to avoid executing an unverified version.
-SKILLS_NPX_PACKAGE = "skills@1.4.8"
+SKILLS_NPX_PACKAGE = "skills@1.5.9"
 
 _SKILLS_CHECK_INTERVAL = 12 * 60 * 60  # 12 hours in seconds
 _SKILLS_CHECK_STAMP = Path.home() / ".agents" / ".acli_skills_check"
@@ -91,7 +91,7 @@ def _find_installed_skills() -> dict[str, str]:
         from google.agents.cli._runner import run_resolved
 
         proc = run_resolved(
-            ["npx", "-y", "skills", "list", "--json"],
+            ["npx", "-y", SKILLS_NPX_PACKAGE, "list", "--json"],
             capture_output=True,
             text=True,
             encoding="utf-8",

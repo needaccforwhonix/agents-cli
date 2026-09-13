@@ -26,6 +26,8 @@ import click
 import requests
 
 from google.agents.cli import _tools
+from google.agents.cli._agent_platform import AgentPlatformClient
+from google.agents.cli._gcp_project import resolve_gcp_project
 from google.agents.cli._project import (
     ProjectConfig,
     chdir_project_root,
@@ -33,7 +35,6 @@ from google.agents.cli._project import (
     find_project_root,
     read_project_config,
     require_deployment_target,
-    resolve_gcp_project,
 )
 from google.agents.cli._runner import popen_resolved, run, run_resolved
 from google.agents.cli.auth import get_access_token
@@ -47,6 +48,7 @@ from google.agents.cli.deploy._utils import (
     read_project_dotenv,
     redact_command,
     resolve_service_name,
+    validate_deployment_region,
 )
 from google.agents.cli.deploy.agent_runtime import (
     check_agent_runtime_operation,
@@ -195,10 +197,14 @@ _CLOUD_RUN_TRANSIENT_DEPLOY_SIGNATURES = (
     "artifactregistry.repositories.downloadArtifacts",
 )
 
-# Retry budget for transient Cloud Run deploy failures. Propagation can take a
-# few minutes, so we allow several attempts with exponential backoff + jitter.
-_CLOUD_RUN_DEPLOY_MAX_TRIES = 5
-_CLOUD_RUN_DEPLOY_MAX_TIME = 300
+# Retry budget for transient Cloud Run deploy failures. IAM propagation can take
+# several minutes, so we retry until max_time with a capped exponential backoff:
+# waits ramp 5s, 10s, 20s then hold at 30s (each full-jittered), i.e. steady
+# ~30s polling until the deadline. max_tries is unset so max_time is the sole
+# stop condition.
+_CLOUD_RUN_DEPLOY_MAX_TIME = 600
+_CLOUD_RUN_DEPLOY_BACKOFF_FACTOR = 5
+_CLOUD_RUN_DEPLOY_BACKOFF_MAX_VALUE = 30
 
 
 class _TransientCloudRunDeployError(click.ClickException):
@@ -212,15 +218,18 @@ class _TransientCloudRunDeployError(click.ClickException):
 @backoff.on_exception(
     backoff.expo,
     _TransientCloudRunDeployError,
-    max_tries=_CLOUD_RUN_DEPLOY_MAX_TRIES,
+    factor=_CLOUD_RUN_DEPLOY_BACKOFF_FACTOR,
+    max_value=_CLOUD_RUN_DEPLOY_BACKOFF_MAX_VALUE,
+    max_tries=None,
     max_time=_CLOUD_RUN_DEPLOY_MAX_TIME,
     jitter=backoff.full_jitter,
     on_backoff=lambda details: logging.warning(
         "Cloud Run deploy hit a transient IAM-propagation error; retrying in "
-        "%.0fs (attempt %d/%d)...",
+        "%.0fs (attempt %d, %.0fs/%ds elapsed)...",
         details["wait"],
         details["tries"] + 1,  # the upcoming attempt; details['tries'] = ones done
-        _CLOUD_RUN_DEPLOY_MAX_TRIES,
+        details["elapsed"],
+        _CLOUD_RUN_DEPLOY_MAX_TIME,
     ),
 )
 def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) -> None:
@@ -357,6 +366,13 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     "(Agent Runtime).",
 )
 @click.option(
+    "--labels",
+    default=None,
+    help="Comma-separated KEY=VALUE resource labels (Agent Runtime, Cloud Run). "
+    "Additive: adds/updates the labels you name; labels you don't name are "
+    "preserved.",
+)
+@click.option(
     "--cluster-name",
     default=None,
     help="Cluster name (GKE).",
@@ -382,6 +398,14 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     is_flag=True,
     default=False,
     help="Start the deployment and return immediately.",
+)
+@click.option(
+    "--update-only",
+    "update_only",
+    is_flag=True,
+    default=False,
+    help="Update an existing deployment, and fail if there is none to update "
+    "instead of creating one (Agent Runtime).",
 )
 @click.option(
     "--status",
@@ -425,6 +449,22 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     default=None,
     help="VPC network name in the target project for DNS peering (Agent Runtime, requires --network-attachment).",
 )
+@click.option(
+    "--agent-gateway-egress",
+    default=None,
+    help="Full resource name of an existing Agent Gateway to route the agent's "
+    "outbound traffic through (Agent Runtime). The gateway must have "
+    "governedAccessPath=AGENT_TO_ANYWHERE. Pass an empty value to unbind. "
+    "Omit the flag to leave the current binding alone.",
+)
+@click.option(
+    "--agent-gateway-ingress",
+    default=None,
+    help="Full resource name of an existing Agent Gateway to route the agent's "
+    "inbound traffic through (Agent Runtime). The gateway must have "
+    "governedAccessPath=CLIENT_TO_AGENT. Pass an empty value to unbind. "
+    "Omit the flag to leave the current binding alone.",
+)
 def cmd_deploy(
     *,
     project,
@@ -447,6 +487,7 @@ def cmd_deploy(
     dry_run,
     list_deployments,
     no_wait,
+    update_only,
     status,
     interactive,
     no_confirm_project,
@@ -454,7 +495,10 @@ def cmd_deploy(
     dns_peering_domain,
     dns_peering_project,
     dns_peering_network,
+    agent_gateway_egress,
+    agent_gateway_ingress,
     build_args,
+    labels,
 ):
     """Deploy the agent.
 
@@ -484,6 +528,7 @@ def cmd_deploy(
     cfg, has_manifest = _load_deploy_config(deployment_target)
 
     region = region or cfg.region
+    validate_deployment_region(region, cfg.deployment_target)
     service_name = _resolve_deploy_service_name(cfg, service_name_override)
 
     if not has_manifest:
@@ -543,6 +588,22 @@ def cmd_deploy(
             f"for Agent Runtime deployments (current target: {cfg.deployment_target})."
         )
 
+    if (agent_gateway_egress is not None or agent_gateway_ingress is not None) and (
+        cfg.deployment_target != "agent_runtime"
+    ):
+        raise click.ClickException(
+            "--agent-gateway-egress and --agent-gateway-ingress are only supported "
+            f"for Agent Runtime deployments (current target: {cfg.deployment_target})."
+        )
+
+    # TODO: b/555632530 - extend --update-only to Cloud Run and GKE, which have
+    # the same "configuration owned by Terraform" problem but are untested for it.
+    if update_only and cfg.deployment_target != "agent_runtime":
+        raise click.ClickException(
+            "--update-only is only supported for Agent Runtime deployments "
+            f"(current target: {cfg.deployment_target})."
+        )
+
     if secrets and cfg.deployment_target not in ("agent_runtime", "cloud_run"):
         raise click.ClickException(
             "--secrets is only supported for Agent Runtime and Cloud Run deployments "
@@ -582,6 +643,21 @@ def cmd_deploy(
                 "the HorizontalPodAutoscaler under deployment/terraform/."
             )
 
+    # --labels is Cloud Run / Agent Runtime only. GKE resources are Terraform-owned,
+    # so labels belong there.
+    if labels and cfg.deployment_target not in ("agent_runtime", "cloud_run"):
+        raise click.ClickException(
+            "--labels is not supported for GKE deployments — GKE resource labels "
+            "are managed via Terraform under deployment/terraform/."
+        )
+
+    try:
+        parsed_labels = parse_key_value_pairs(labels)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Error parsing --labels flag value '{labels}': {e}"
+        ) from e
+
     # The sizing flags (cpu/memory/min/max/concurrency) are left as-is (possibly
     # None) so each deployment target can decide how to handle unset values:
     #   - Agent Runtime: pass None → FieldMask omits the field → preserves on update
@@ -607,6 +683,11 @@ def cmd_deploy(
             for key, value in runtime_shape.items():
                 msg += f"\n  {key}: {value}"
             msg += "\n  (defaults apply on create; existing values preserved on update)"
+            if update_only:
+                msg += (
+                    "\n  --update-only: an absent engine fails the deploy "
+                    "rather than being created."
+                )
             if psc_interface_config:
                 msg += f"\n  PSC network attachment: {psc_interface_config['network_attachment']}"
                 for dc in psc_interface_config.get("dns_peering_configs", []):
@@ -614,6 +695,14 @@ def cmd_deploy(
                         f"\n  DNS peering: {dc['domain']}"
                         f" → {dc['target_project']}/{dc['target_network']}"
                     )
+            for label, gateway in (
+                ("egress", agent_gateway_egress),
+                ("ingress", agent_gateway_ingress),
+            ):
+                if gateway:
+                    msg += f"\n  Agent Gateway {label}: {gateway}"
+                elif gateway is not None:
+                    msg += f"\n  Agent Gateway {label}: (cleared)"
             click.echo(msg)
             return
         deploy_agent_runtime(
@@ -623,10 +712,14 @@ def cmd_deploy(
             display_name=service_name,
             set_env_vars=update_env_vars,
             set_secrets=secrets,
+            labels=parsed_labels or None,
             service_account=service_account,
             agent_identity=agent_identity,
             no_wait=no_wait,
+            update_only=update_only,
             psc_interface_config=psc_interface_config,
+            agent_gateway_egress=agent_gateway_egress,
+            agent_gateway_ingress=agent_gateway_ingress,
             build_args=build_args,
             port=port,
             cpu=cpu,
@@ -686,8 +779,18 @@ def cmd_deploy(
         # Inject environment variables. Precedence: --update-env-vars > .env > defaults.
         project_root = find_project_root() or "."
         env_var_map = read_project_dotenv(project_root)
-        env_var_map.update(parse_key_value_pairs(update_env_vars))
-        env_var_map.setdefault("AGENT_VERSION", get_project_version(project_root))
+        try:
+            env_var_map.update(parse_key_value_pairs(update_env_vars))
+        except ValueError as e:
+            raise click.ClickException(
+                f"Error parsing --update-env-vars flag value '{update_env_vars}': {e}"
+            ) from e
+
+        # Skip the version read (and its warning) when the user has already supplied one.
+        if "AGENT_VERSION" not in env_var_map:
+            env_var_map["AGENT_VERSION"] = get_project_version(project_root)
+        # Fail closed: ADK defaults content-in-spans to true; keep it off for bare deploys.
+        env_var_map.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
 
         # Set APP_URL so the service knows its own URL (used by A2A agent cards, etc.)
         if "APP_URL" not in env_var_map and project:
@@ -733,8 +836,19 @@ def cmd_deploy(
             )
             args.extend(["--update-secrets", secret_str])
 
-        # Add default labels
-        args.extend(["--labels", "created-by=adk"])
+        # Merge user labels with the default ones, seeded LAST so
+        # user-supplied ones can't override it.
+        if parsed_labels.get("created-by") not in (None, "agents-cli"):
+            logging.warning(
+                "Ignoring --labels created-by=%s: 'created-by' is currently reserved.",
+                parsed_labels["created-by"],
+            )
+        cr_labels = {**parsed_labels, "created-by": "agents-cli"}
+        # --update-labels merges (preserves existing labels), consistent with
+        # --update-env-vars / --update-secrets above; emit exactly one flag.
+        args.extend(
+            ["--update-labels", ",".join(f"{k}={v}" for k, v in cr_labels.items())]
+        )
 
         if no_wait:
             args.append("--async")
@@ -963,9 +1077,9 @@ def _deploy_gke(
     if dry_run:
         if not image:
             tf_dir = "deployment/terraform/single-project"
-            click.echo(f"  Would run: terraform -chdir={tf_dir} init")
+            click.echo(f"  Would run: terraform -chdir={tf_dir} init -input=false")
             click.echo(
-                f"  Would run: terraform -chdir={tf_dir} apply -auto-approve"
+                f"  Would run: terraform -chdir={tf_dir} apply -auto-approve -input=false"
                 f" -target=({len(deploy_targets)} targets)"
             )
             click.echo(
@@ -984,8 +1098,9 @@ def _deploy_gke(
     if not image:
         tf_dir = "deployment/terraform/single-project"
         click.echo("\n🏗️  Provisioning infrastructure with Terraform...")
+        # -input=false: report a missing variable instead of blocking on a prompt.
         run(
-            ["terraform", f"-chdir={tf_dir}", "init"],
+            ["terraform", f"-chdir={tf_dir}", "init", "-input=false"],
             check_err_msg="Terraform init failed",
         )
         apply_args = [
@@ -993,6 +1108,7 @@ def _deploy_gke(
             f"-chdir={tf_dir}",
             "apply",
             "-auto-approve",
+            "-input=false",
             f"-var=project_id={project}",
         ]
         for target in deploy_targets:
@@ -1041,8 +1157,16 @@ def _deploy_gke(
     # CLI-derived defaults, matching the Cloud Run and Agent Runtime paths.
     project_root = find_project_root() or Path.cwd()
     env_var_map = read_project_dotenv(project_root)
-    env_var_map.update(parse_key_value_pairs(update_env_vars))
-    env_var_map.setdefault("AGENT_VERSION", get_project_version(project_root))
+    try:
+        env_var_map.update(parse_key_value_pairs(update_env_vars))
+    except ValueError as e:
+        raise click.ClickException(f"argument --update-env-vars: {e}") from e
+
+    # Skip the version read (and its warning) when the user has already supplied one.
+    if "AGENT_VERSION" not in env_var_map:
+        env_var_map["AGENT_VERSION"] = get_project_version(project_root)
+    # Fail closed: ADK defaults content-in-spans to true; keep it off for bare deploys.
+    env_var_map.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
 
     click.echo("\n🌐 Getting service IP...")
     ip_result = run(
@@ -1120,10 +1244,8 @@ def _list_deployments(cfg: ProjectConfig, project: str | None, region: str) -> N
 
 
 def _list_agent_runtime_deployments(project: str | None, location: str) -> None:
-    """List Agent Runtime deployments via the Vertex AI SDK."""
+    """List Agent Runtime deployments via the Agent Platform SDK."""
     import warnings
-
-    import vertexai
 
     from google.agents.cli.auth import get_adc_credentials
 
@@ -1138,15 +1260,16 @@ def _list_agent_runtime_deployments(project: str | None, location: str) -> None:
             "Could not determine GCP project. Pass --project or set a default project."
         )
 
-    client = vertexai.Client(project=project, location=location)
+    client = AgentPlatformClient(project=project, location=location)
     agents = list(client.agent_engines.list())
 
     if not agents:
         click.echo(f"No Agent Runtime deployments found in {project} ({location}).")
         return
 
-    from rich.console import Console
     from rich.table import Table
+
+    from google.agents.cli._output import Console
 
     table = Table(title=f"Agent Runtime Deployments — {project} ({location})")
     table.add_column("Display Name", style="bold")
@@ -1199,8 +1322,9 @@ def _list_cloud_run_deployments(project: str | None, region: str | None) -> None
         click.echo(f"No Cloud Run services found{location_label}{project_label}.")
         return
 
-    from rich.console import Console
     from rich.table import Table
+
+    from google.agents.cli._output import Console
 
     title_parts = ["Cloud Run Services"]
     if project:
@@ -1261,8 +1385,9 @@ def _list_gke_deployments() -> None:
         click.echo("No GKE deployments found in the current cluster.")
         return
 
-    from rich.console import Console
     from rich.table import Table
+
+    from google.agents.cli._output import Console
 
     table = Table(title="GKE Deployments")
     table.add_column("Name", style="bold")

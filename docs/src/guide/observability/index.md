@@ -7,14 +7,17 @@ Every `agents-cli` project ships with OpenTelemetry instrumentation that automat
 - **Error visibility** — traces capture errors, helping pinpoint where failures occur.
 - **No configuration required** — works out-of-the-box in all environments.
 
-For ADK-based agents, **prompt-response logging** is also available. It captures model interactions (prompts, responses, tokens) and exports them to GCS, BigQuery, and Cloud Logging. Disabled locally by default, enabled automatically in deployed environments.
+For ADK-based agents, **prompt-response logging** captures full model interactions (prompts, responses, tokens) and uploads them to **GCS** (JSONL) + a **BigQuery** `completions` table. It's enabled whenever a logs bucket is configured (`LOGS_BUCKET_NAME` + the `OTEL_INSTRUMENTATION_GENAI_*` upload vars), which Terraform-provisioned deployments do by default.
+
+> **Two independent tiers.** Prompt-response logging (GCS/BigQuery completions) captures **full content**. Whether content *also* appears in **Cloud Trace spans / Cloud Logging events** is governed separately by `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT` — content kept **out** of traces/events) and `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`. So by default: **full content in GCS/BigQuery, no content in traces.**
 
 ### Logging Behavior by Environment
 
-| Environment | Tracing (Cloud Trace) | Prompt-Response Logging |
+| Environment | Cloud Trace spans | Prompt-Response Logging (GCS/BigQuery) |
 |---|---|---|
-| **Local** (`agents-cli playground`) | Enabled | Disabled (no `LOGS_BUCKET_NAME`) |
-| **Deployed** (Terraform) | Enabled | Enabled (`NO_CONTENT` mode — metadata only) |
+| **Local** (`agents-cli playground`) | Enabled, no content | Off (no `LOGS_BUCKET_NAME`) |
+| **Deployed** (Terraform-provisioned) | Enabled, no content | **On — full prompts/responses** |
+| **Deployed** (bare `agents-cli deploy`, no bucket) | Enabled, no content | Off (no `LOGS_BUCKET_NAME`) |
 
 ---
 

@@ -27,10 +27,12 @@ from typing import Any
 
 import yaml
 from cookiecutter.main import cookiecutter
-from rich.console import Console
 from rich.prompt import Confirm, IntPrompt
 
-from .lock_utils import get_lock_filename
+from google.agents.cli._output import Console
+from google.agents.cli._project import root_agent_name
+
+from .lock_utils import get_lock_filename, is_empty_agent
 from .remote_template import (
     get_base_template_name,
 )
@@ -48,6 +50,21 @@ AGENT_ALIASES: dict[str, str] = {
     "adk_base": "adk",
     "adk_a2a_base": "adk",
     "adk_a2a": "adk",
+}
+
+SESSION_TYPES = {
+    "in_memory": {
+        "display_name": "in_memory",
+        "description": "Stateless, data in memory",
+    },
+    "cloud_sql": {
+        "display_name": "cloud_sql",
+        "description": "PostgreSQL persistence",
+    },
+    "agent_platform_sessions": {
+        "display_name": "agent_platform_sessions",
+        "description": "Managed session service",
+    },
 }
 
 
@@ -76,11 +93,23 @@ def resolve_agent_alias(name: str | None) -> str | None:
 # This replaces Jinja2 conditionals in filenames for Windows compatibility.
 #
 # Format: "relative/path/to/file_or_dir": lambda config: bool_condition
-# The config dict contains: agent_name, cicd_runner, is_a2a
+# The config dict contains: agent_name, deployment_target, cicd_runner, is_a2a
 # =============================================================================
 
 
 CONDITIONAL_FILES = {
+    # The deployment targets' e2e test drives ADK's own routes (/run_sse, the
+    # session API) and imports a2a, which a non-ADK project neither serves nor
+    # depends on, so it would fail at import. A template shipping its own copy
+    # keeps it: the overlay has already replaced the file by this point.
+    "tests/integration/test_server_e2e.py": lambda c: (
+        c.get("is_a2a", False) or c.get("template_owns_e2e", False)
+    ),
+    # The reasoning-engine adapter is only usable on Agent Engine, which is the
+    # only target that installs aiplatform[agent-engines].
+    "{agent_directory}/app_utils/reasoning_engine_adapter.py": (
+        lambda c: c.get("deployment_target") == "agent_runtime"
+    ),
     # CI/CD runner conditional files (base_template)
     ".cloudbuild": lambda c: c.get("cicd_runner") == "google_cloud_build",
     ".github": lambda c: c.get("cicd_runner") == "github_actions",
@@ -106,7 +135,8 @@ def apply_conditional_files(
 
     Args:
         project_path: Path to the generated project directory
-        config: Configuration dict with keys: agent_name, cicd_runner, is_a2a
+        config: Configuration dict with keys: agent_name, deployment_target,
+            cicd_runner, is_a2a
         agent_directory: Name of the agent directory (replaces {agent_directory} placeholder)
     """
     for rel_path_template, condition_fn in CONDITIONAL_FILES.items():
@@ -275,19 +305,56 @@ def add_base_template_dependencies(
     )
 
 
+def _validate_go_agent_dir(agent_dir: str) -> None:
+    """Validate that ``agent_dir`` is a valid Go package name."""
+    # A Go package name is a single import-path element, not a nested path.
+    if "/" in agent_dir:
+        raise ValueError(
+            f"Agent directory '{agent_dir}' contains a '/'. A Go agent directory "
+            "must be a single package name, not a nested path."
+        )
+
+    # Must be a valid Go package name: start with a letter, then letters,
+    # digits, or underscores.
+    if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", agent_dir):
+        raise ValueError(
+            f"Agent directory '{agent_dir}' is not a valid Go identifier. It must "
+            "start with a letter and contain only letters, digits, and "
+            "underscores."
+        )
+
+
+def _validate_python_agent_dir(agent_dir: str) -> None:
+    if "-" in agent_dir:
+        raise ValueError(
+            f"Agent directory '{agent_dir}' contains hyphens (-) which are not allowed. "
+            "Agent directories must be valid Python identifiers since they're used as module names. "
+            "Please use underscores (_) or lowercase letters instead."
+        )
+
+    if not agent_dir.isidentifier():
+        raise ValueError(
+            f"Agent directory '{agent_dir}' is not a valid Python identifier. "
+            "Agent directories must be valid Python identifiers since they're used as module names. "
+            "Please use only lowercase letters, numbers, and underscores, and don't start with a number."
+        )
+
+
 def validate_agent_directory_name(
     agent_dir: str, allow_dot: bool = False, language: str = "python"
 ) -> None:
     """Validate that an agent directory name is a valid identifier for the language.
 
+    Enforces an allowlist regex for all languages, then applies language-specific
+    rules.
+
     Args:
         agent_dir: The agent directory name to validate
         allow_dot: If True, allows "." as a special value indicating flat structure
-        language: The project language (python, go, java). Validation rules are
-            only enforced for Python projects since they need valid module names.
+        language: The project language
 
     Raises:
-        ValueError: If the agent directory name is not valid for the language
+        ValueError: If the agent directory name is not valid
 
     Note:
         The special value "." indicates flat structure - agent code is in the
@@ -301,25 +368,22 @@ def validate_agent_directory_name(
             "Agent directory '.' is not valid in this context. "
             "Use '.' only to indicate flat structure templates."
         )
-
-    # Only validate Python identifier rules for Python projects
-    # Go and Java have different directory structure requirements
-    if language != "python":
-        return
-
-    if "-" in agent_dir:
+    # Allowlist check — enforced for ALL languages.
+    # Accepts one or more path components separated by forward slashes.
+    # Each component can only contain letters, digits, hyphens, and underscores.
+    # This implicitly blocks absolute paths (/), dot-dot (..), backslashes (\),
+    # tilde (~), Windows drives (C:), and any other path-traversal payload.
+    if not re.match(r"^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*$", agent_dir):
         raise ValueError(
-            f"Agent directory '{agent_dir}' contains hyphens (-) which are not allowed. "
-            "Agent directories must be valid Python identifiers since they're used as module names. "
-            "Please use underscores (_) or lowercase letters instead."
+            f"Invalid agent directory name '{agent_dir}'. It can only contain "
+            "letters, numbers, hyphens, underscores, and forward slashes (no "
+            "absolute paths or dot-dot components)."
         )
 
-    if not agent_dir.replace("_", "a").isidentifier():
-        raise ValueError(
-            f"Agent directory '{agent_dir}' is not a valid Python identifier. "
-            "Agent directories must be valid Python identifiers since they're used as module names. "
-            "Please use only lowercase letters, numbers, and underscores, and don't start with a number."
-        )
+    if language == "go":
+        _validate_go_agent_dir(agent_dir)
+    elif language == "python":
+        _validate_python_agent_dir(agent_dir)
 
 
 def get_overwrite_folders(agent_directory: str) -> list[str]:
@@ -583,29 +647,14 @@ def prompt_session_type_selection(default_value: str | None = None) -> str:
     """Ask user to select a session type for Cloud Run deployment."""
     console = Console()
 
-    session_types = {
-        "in_memory": {
-            "display_name": "in_memory",
-            "description": "Stateless, data in memory",
-        },
-        "cloud_sql": {
-            "display_name": "cloud_sql",
-            "description": "PostgreSQL persistence",
-        },
-        "agent_platform_sessions": {
-            "display_name": "agent_platform_sessions",
-            "description": "Managed session service",
-        },
-    }
-
     default_idx = 1
-    keys = list(session_types.keys())
+    keys = list(SESSION_TYPES.keys())
     if default_value and default_value in keys:
         default_idx = keys.index(default_value) + 1
 
     console.print("\n> Please select a session type:")
     console.print("\n  [bold cyan]💾 Session Types[/]")
-    for idx, (key, info) in enumerate(session_types.items(), 1):
+    for idx, (key, info) in enumerate(SESSION_TYPES.items(), 1):
         display_name = info["display_name"]
         description = info["description"]
         if key == default_value:
@@ -931,11 +980,14 @@ def process_template(
     remote_template_path: pathlib.Path | None = None,
     remote_config: dict[str, Any] | None = None,
     in_folder: bool = False,
+    overlay_is_project: bool = False,
     cli_overrides: dict[str, Any] | None = None,
     agent_garden: bool = False,
     remote_spec: Any | None = None,
+    recorded_base_template: str | None = None,
     google_cloud_project: str | None = None,
     bq_analytics: bool = False,
+    agent_gateway: bool = False,
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Process the template directory and create a new project.
@@ -951,10 +1003,15 @@ def process_template(
         remote_template_path: Optional path to remote template for overlay
         remote_config: Optional remote template configuration
         in_folder: Whether to template directly into the output directory instead of creating a subdirectory
+        overlay_is_project: True when the overlay source is the output project
+            itself (--agent local@.), so its agents-cli-manifest.yaml is the
+            project's own and is copied. False for any other source, whose
+            manifest describes the template and is skipped.
         cli_overrides: Optional CLI override values that should take precedence over template config
         agent_garden: Whether this deployment is from Agent Garden
         google_cloud_project: Optional GCP project ID to populate .env file
         bq_analytics: Whether to include BigQuery Agent Analytics Plugin
+        agent_gateway: Whether the Dockerfile should trust the Agent Gateway root CA
     """
     logging.debug(f"Processing template from {template_dir}")
     logging.debug(f"Project name: {project_name}")
@@ -1023,10 +1080,16 @@ def process_template(
         agent_path = template_dir.parent  # Get parent of template dir
 
     logging.debug(f"agent path: {agent_path}")
-    logging.debug(f"agent path exists: {agent_path.exists()}")
-    logging.debug(
-        f"agent path contents: {list(agent_path.iterdir()) if agent_path.exists() else 'N/A'}"
-    )
+    if not agent_path.exists():
+        # Fail here rather than carry on: every later use of agent_path is guarded
+        # by exists(), so an unresolvable base silently copies no agent layer and
+        # produces a half-built project.
+        raise ValueError(
+            f"Base template '{base_template_name}' not found at {agent_path}. "
+            "A template declares its base in .template/templateconfig.yaml; "
+            f"'{base_template_name}' is not one this CLI version provides."
+        )
+    logging.debug(f"agent path contents: {list(agent_path.iterdir())}")
 
     # Resolve template config once.
     if remote_config:
@@ -1082,7 +1145,6 @@ def process_template(
                     project_template,
                     agent_name,
                     overwrite=True,
-                    agent_directory=agent_directory,
                 )
                 logging.debug(f"1a. Copied shared base template from {shared_base_path}")
 
@@ -1094,7 +1156,6 @@ def process_template(
                     project_template,
                     agent_name,
                     overwrite=True,
-                    agent_directory=agent_directory,
                 )
                 logging.debug(
                     f"1b. Copied {language} base template from {language_base_path}"
@@ -1120,7 +1181,6 @@ def process_template(
                         project_template,
                         agent_name=agent_name,
                         overwrite=True,
-                        agent_directory=agent_directory,
                     )
                     logging.debug(
                         f"2a. Copied shared deployment files from {shared_deployment_path}"
@@ -1136,7 +1196,6 @@ def process_template(
                         project_template,
                         agent_name=agent_name,
                         overwrite=True,
-                        agent_directory=agent_directory,
                     )
                     logging.debug(
                         f"2b. Copied {language} deployment files from {language_deployment_path}"
@@ -1199,7 +1258,6 @@ def process_template(
                         target_agent_folder,
                         agent_name,
                         overwrite=True,
-                        agent_directory=agent_directory,
                     )
 
                 # For Java templates, also copy src/test if it exists
@@ -1215,7 +1273,6 @@ def process_template(
                             target_test_folder,
                             agent_name,
                             overwrite=True,
-                            agent_directory=agent_directory,
                         )
 
                 # Copy other folders (frontend, tests, notebooks, deployment)
@@ -1234,8 +1291,31 @@ def process_template(
                             project_folder,
                             agent_name,
                             overwrite=True,
-                            agent_directory=agent_directory,
                         )
+
+                # 6c. Overlay any remaining top-level files/dirs the agent ships
+                # (e.g. a Go agent's main.go/go.mod/Dockerfile, extra CI, e2e/) so
+                # a framework agent can own the whole project, not just its agent
+                # directory. No-op for agents that only ship an agent directory.
+                already_copied = {
+                    ".template",
+                    "__pycache__",
+                    # First component of the agent dir — "app" (python/ts),
+                    # "agent" (go), or "src" (java's src/main/java, whose
+                    # src/main + src/test are handled by the copies above).
+                    template_agent_directory.split("/")[0],
+                    *other_folders,
+                }
+                for item in agent_path.iterdir():
+                    if item.name in already_copied:
+                        continue
+                    logging.debug(f"6c. Overlaying agent-owned {item.name}")
+                    copy_files(
+                        item,
+                        project_template / item.name,
+                        agent_name,
+                        overwrite=True,
+                    )
 
             # Create cookiecutter.json in the template root
             # Get settings from template config
@@ -1254,6 +1334,9 @@ def process_template(
             cookiecutter_config = {
                 "project_name": project_name,
                 "agent_name": agent_name,
+                # The name of the root agent could be different than the
+                # project name, because of character set restrictions.
+                "root_agent_name": root_agent_name(project_name),
                 "package_version": current_version,
                 "generated_at": datetime.now(tz=UTC).isoformat(),
                 "agent_description": template_config.get("description", ""),
@@ -1267,6 +1350,14 @@ def process_template(
                 "session_type": session_type or "",
                 "frontend_type": frontend_type,
                 "extra_dependencies": [extra_deps],
+                # What upgrade and enhance must re-fetch: the spec this project
+                # was created from, or the bundled template name.
+                "recorded_base_template": recorded_base_template or agent_name,
+                # Group-scoped deps ([project.optional-dependencies]); mirrored
+                # in generate_locks so a rendered lock matches a rendered project.
+                "extra_optional_dependencies": settings.get(
+                    "extra_optional_dependencies", {}
+                ),
                 "agent_directory": get_agent_directory(
                     template_config, cli_overrides, language
                 ),
@@ -1278,6 +1369,7 @@ def process_template(
                 "java_package": java_vars.get("java_package", ""),
                 "java_package_path": java_vars.get("java_package_path", ""),
                 "bq_analytics": bq_analytics,
+                "agent_gateway": agent_gateway,
                 "wheel_gcs_uri": os.environ.get("WHEEL_GCS_URI", ""),
                 "agents_cli_version_pin": agents_cli_version_pin(),
                 "agent_guidance_filename": agent_guidance_filename,
@@ -1356,7 +1448,8 @@ def process_template(
                         generated_project_dir,
                         agent_name=agent_name,
                         overwrite=True,
-                        agent_directory=agent_directory,
+                        skip_manifest=not overlay_is_project,
+                        guidance_filename=agent_guidance_filename,
                     )
                 logging.debug("Remote template files copied successfully")
 
@@ -1367,10 +1460,15 @@ def process_template(
                     generated_project_dir / agent_directory / "root_agent.yaml"
                 )
 
-                if root_agent_yaml.exists():
-                    _generate_yaml_agent_shim(agent_py_path, agent_directory, console)
-                elif agent_py_path.exists():
-                    _inject_app_object_if_missing(agent_py_path, agent_directory, console)
+                # Only for ADK: the shim imports google.adk, which a project on
+                # the empty base does not depend on.
+                if "adk" in tags:
+                    if root_agent_yaml.exists():
+                        _generate_yaml_agent_shim(agent_py_path, agent_directory, console)
+                    elif agent_py_path.exists():
+                        _inject_app_object_if_missing(
+                            agent_py_path, agent_directory, console
+                        )
 
             # Move the generated project to the final destination
             generated_project_dir = temp_path / project_name
@@ -1447,6 +1545,15 @@ def process_template(
                 "deployment_target": deployment_target,
                 "cicd_runner": cicd_runner or "google_cloud_build",
                 "is_a2a": "a2a" in tags,
+                "template_owns_e2e": bool(
+                    remote_template_path
+                    and (
+                        remote_template_path
+                        / "tests"
+                        / "integration"
+                        / "test_server_e2e.py"
+                    ).is_file()
+                ),
             }
             apply_conditional_files(
                 final_destination, conditional_config, agent_directory
@@ -1500,8 +1607,13 @@ def process_template(
                     if remote_uv_lock.exists():
                         shutil.copy2(remote_uv_lock, final_destination / "uv.lock")
                         logging.debug("Used uv.lock from remote template")
-                elif deployment_target and deployment_target != "none":
-                    # For local templates, use the existing logic.
+                elif (
+                    deployment_target
+                    and deployment_target != "none"
+                    and not is_empty_agent(agent_name)
+                ):
+                    # For local templates, use the existing logic. The empty
+                    # templates ship no lock; a framework template brings its own.
                     lock_path = (
                         pathlib.Path(__file__).parent.parent
                         / "resources"
@@ -1540,11 +1652,9 @@ def process_template(
             os.chdir(original_dir)
 
 
-def should_exclude_path(
-    path: pathlib.Path, agent_name: str, agent_directory: str = "app"
-) -> bool:
-    """Determine if a path should be excluded based on the agent type."""
-    return False
+_TOOL_CACHES = frozenset(
+    {"__pycache__", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".venv"}
+)
 
 
 def copy_files(
@@ -1552,7 +1662,9 @@ def copy_files(
     dst: pathlib.Path,
     agent_name: str | None = None,
     overwrite: bool = False,
-    agent_directory: str = "app",
+    *,
+    skip_manifest: bool = False,
+    guidance_filename: str | None = None,
 ) -> None:
     """
     Copy files with configurable behavior for exclusions and overwrites.
@@ -1562,22 +1674,35 @@ def copy_files(
         dst: Destination path
         agent_name: Name of the agent (for agent-specific exclusions)
         overwrite: Whether to overwrite existing files (True) or skip them (False)
-        agent_directory: Name of the agent directory (for agent-specific exclusions)
+        guidance_filename: Write a root AGENTS.md under this name instead, so a
+            template's guide replaces the base one whatever the project calls it.
+        skip_manifest: Skip a root agents-cli-manifest.yaml. Set when copying a
+            fetched template, whose manifest describes the template rather than
+            the project and has already been read for config.
     """
 
     def should_skip(path: pathlib.Path) -> bool:
-        """Determine if a file/directory should be skipped during copying."""
+        """Determine if a file/directory should be skipped during copying.
+        Symlinks are always skipped for remote templates to prevent CWE-59
+        (symlink-following) attacks where an attacker ships a symlink pointing
+        to sensitive host files (e.g. ~/.ssh/id_rsa) and the victim's project
+        ends up with a copy of that file's contents.
+        """
+        # Never follow symlinks from untrusted remote template sources
+        if path.is_symlink():
+            logging.warning(
+                f"Skipping symlink in template source (symlinks are not allowed): {path}"
+            )
+            return True
         if path.suffix in [".pyc"]:
             return True
-        if "__pycache__" in str(path) or path.name == "__pycache__":
+        if "__pycache__" in str(path) or path.name in _TOOL_CACHES:
             return True
         if ".git" in path.parts:
             return True
-        if agent_name is not None and should_exclude_path(
-            path, agent_name, agent_directory
-        ):
-            return True
         if path.is_dir() and path.name == ".template":
+            return True
+        if skip_manifest and path.name == "agents-cli-manifest.yaml":
             return True
         return False
 
@@ -1604,9 +1729,13 @@ def copy_files(
                 logging.debug(f"Skipping file/directory: {item}")
                 continue
 
-            d = dst / item.name
+            # Root only: nested AGENTS.md files are the template's own docs.
+            if guidance_filename and item.is_file() and item.name == "AGENTS.md":
+                d = dst / guidance_filename
+            else:
+                d = dst / item.name
             if item.is_dir():
-                copy_files(item, d, agent_name, overwrite, agent_directory)
+                copy_files(item, d, agent_name, overwrite)
             else:
                 if overwrite or not d.exists():
                     try:
@@ -1680,10 +1809,41 @@ def copy_deployment_files(
             project_template,
             agent_name=agent_name,
             overwrite=True,
-            agent_directory=agent_directory,
         )
     else:
         logging.warning(f"Deployment target directory not found: {deployment_path}")
+
+
+def _assert_path_within(
+    candidate: pathlib.Path,
+    root: pathlib.Path,
+) -> None:
+    """Raise ValueError if *candidate* is not contained within *root*.
+
+    Both paths are resolved to their real absolute forms before the check so
+    that symbolic links and ``..`` components cannot be used to bypass the
+    boundary.
+
+    Args:
+        candidate: The path that must be inside *root*.
+        root: The allowed root directory.
+
+    Raises:
+        ValueError: If *candidate* resolves to a location outside *root*.
+    """
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except ValueError as e:
+        raise ValueError(
+            f"Security check failed: '{candidate}' would be written "
+            f"outside the project directory '{root}'. "
+            "Aborting to prevent path-traversal exploitation."
+        ) from e
+
+
+def _skip_symlinks(directory: str, names: list[str]) -> set[str]:
+    """Ignore callback for shutil.copytree to skip symlinks at every nesting level."""
+    return {n for n in names if pathlib.Path(directory, n).is_symlink()}
 
 
 def copy_flat_structure_agent_files(
@@ -1696,12 +1856,17 @@ def copy_flat_structure_agent_files(
     For flat structure templates, Python files (*.py) in the root are copied
     to the agent directory, while other files are copied to the project root.
 
+    Security: symlinks in *src* are never followed; the resolved destination
+    path is verified to be contained within *dst* before any write occurs.
+
     Args:
         src: Source path (template root with flat structure)
         dst: Destination path (project root)
         agent_directory: Target agent directory name
     """
     agent_dst = dst / agent_directory
+    # Path-containment guard: reject traversal that slipped past validation
+    _assert_path_within(agent_dst, dst)
     agent_dst.mkdir(parents=True, exist_ok=True)
 
     # Files that should go to agent directory
@@ -1714,11 +1879,18 @@ def copy_flat_structure_agent_files(
             continue
         if item.name == "__pycache__":
             continue
+        if item.is_symlink():
+            logging.warning(
+                f"Skipping symlink in flat-structure template source "
+                f"(symlinks are not allowed): {item}"
+            )
+            continue
 
         if item.is_file():
             if item.suffix in agent_file_extensions:
                 # Python files go to agent directory
                 dest_file = agent_dst / item.name
+                _assert_path_within(dest_file, dst)
                 logging.debug(
                     f"Flat structure: copying {item.name} -> {agent_directory}/{item.name}"
                 )
@@ -1726,12 +1898,14 @@ def copy_flat_structure_agent_files(
             else:
                 # Other files go to project root
                 dest_file = dst / item.name
+                _assert_path_within(dest_file, dst)
                 logging.debug(f"Flat structure: copying {item.name} -> {item.name}")
                 shutil.copy2(item, dest_file)
         elif item.is_dir():
             # Directories are copied to project root (preserving structure)
             dest_dir = dst / item.name
+            _assert_path_within(dest_dir, dst)
             logging.debug(f"Flat structure: copying directory {item.name}")
             if dest_dir.exists():
                 shutil.rmtree(dest_dir)
-            shutil.copytree(item, dest_dir)
+            shutil.copytree(item, dest_dir, ignore=_skip_symlinks)

@@ -329,11 +329,39 @@ resource "kubernetes_deployment_v1" "app" {
           }
 
           env {
+            name  = "OTEL_SERVICE_NAME"
+            value = "{{cookiecutter.project_name}}"
+          }
+
+          env {
             name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
             value = "NO_CONTENT"
           }
 
-{%- if cookiecutter.language == "python" %}
+          env {
+            name  = "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"
+            value = "false"
+          }
+
+          env {
+            name  = "OTEL_SEMCONV_STABILITY_OPT_IN"
+            value = "gen_ai_latest_experimental"
+          }
+
+          env {
+            name  = "OTEL_INSTRUMENTATION_GENAI_UPLOAD_FORMAT"
+            value = "jsonl"
+          }
+
+          env {
+            name  = "OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK"
+            value = "upload"
+          }
+
+          env {
+            name  = "OTEL_INSTRUMENTATION_GENAI_UPLOAD_BASE_PATH"
+            value = "gs://${google_storage_bucket.logs_data_bucket.name}/completions"
+          }
           env {
             name  = "GOOGLE_CLOUD_PROJECT"
             value = var.project_id
@@ -348,6 +376,7 @@ resource "kubernetes_deployment_v1" "app" {
             name  = "GOOGLE_GENAI_USE_VERTEXAI"
             value = "True"
           }
+{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
           env {
             name  = "INSTANCE_CONNECTION_NAME"

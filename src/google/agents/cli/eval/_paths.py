@@ -38,7 +38,7 @@ Single source of truth so eval commands stay consistent. Lifecycle stages:
       Consumed by:  ``eval analyze``
       Produced by:  ``eval grade``.
 
-All four file kinds share the SDK type ``vertexai.types.EvaluationDataset``
+All four file kinds share the SDK type ``agentplatform.types.EvaluationDataset``
 as a container, but they are NOT interchangeable: the populated fields
 differ by stage.
 """
@@ -98,6 +98,17 @@ def timestamped_artifact_path(directory: Path, prefix: str, ext: str = "json") -
     """
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{prefix}_{timestamp()}.{ext}"
+
+
+def resolve_input_dataset(project_root: Path, dataset: str | None) -> str | None:
+    """The dataset to run inference over: the flag, else the scaffolded default.
+
+    None means neither was available, which callers report as a usage error.
+    """
+    if dataset:
+        return dataset
+    default = project_root / DEFAULT_INPUT_DATASET
+    return str(default) if default.exists() else None
 
 
 def default_traces_path(project_root: Path) -> Path:

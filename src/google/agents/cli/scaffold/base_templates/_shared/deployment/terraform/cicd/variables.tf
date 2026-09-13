@@ -152,9 +152,3 @@ variable "create_repository" {
 }
 {% endif %}
 
-variable "feedback_logs_filter" {
-  type        = string
-  description = "Log Sink filter for capturing feedback data. Captures logs where the `log_type` field is `feedback`."
-  default     = "jsonPayload.log_type=\"feedback\" jsonPayload.service_name=\"{{cookiecutter.project_name}}\""
-}
-

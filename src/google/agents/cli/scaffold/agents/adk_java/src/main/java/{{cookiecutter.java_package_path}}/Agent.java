@@ -42,10 +42,12 @@ import org.springframework.web.bind.annotation.RestController;
 @ComponentScan(basePackages = "{{cookiecutter.java_package}}")
 public class Agent {
 
+  private static final String MODEL = "gemini-3.7-flash";
+
   public static final LlmAgent ROOT_AGENT =
       LlmAgent.builder()
-          .name("{{cookiecutter.project_name}}")
-          .model("gemini-flash-latest")
+          .name("{{cookiecutter.root_agent_name}}")
+          .model(MODEL)
           .description("A helpful AI assistant that can provide weather information.")
           .instruction(
               "You are a helpful assistant that can provide weather information. "

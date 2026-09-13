@@ -16,7 +16,11 @@
 
 import importlib.metadata
 
+# Reported when the CLI runs from a source checkout rather than an installed
+# distribution. Version checks treat it as "unknown, don't block".
+DEV_VERSION = "0.0.0-dev"
+
 try:
     __version__ = importlib.metadata.version("google-agents-cli")
 except importlib.metadata.PackageNotFoundError:
-    __version__ = "0.0.0-dev"
+    __version__ = DEV_VERSION

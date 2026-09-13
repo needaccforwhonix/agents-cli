@@ -25,9 +25,9 @@ from pathlib import Path
 from typing import Any
 
 import click
-from rich.console import Console
 
 from google.agents.cli._click import LazyGroup
+from google.agents.cli._output import Console
 from google.agents.cli._project import (
     find_project_root,
     read_project_config,
@@ -101,8 +101,7 @@ def dataset_group():
 @click.option(
     "--model",
     default=None,
-    help="Optional. Custom model used for scenario generation."
-    "Example: gemini-3-flash-preview.",
+    help="Optional. Custom model used for scenario generation. Example: gemini-3.7-flash.",
 )
 @click.option(
     "--max-turns",

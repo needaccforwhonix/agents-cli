@@ -18,8 +18,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
-import threading
 from functools import cache
 from pathlib import Path
 
@@ -48,6 +46,10 @@ DEFAULT_INSTALL_HINTS = {
     "terraform": "Install Terraform (https://developer.hashicorp.com/terraform/downloads) and ensure it is in your PATH.",
     "gh": "Install the GitHub CLI (https://cli.github.com/) and ensure it is in your PATH.",
     "git": "Install Git (https://git-scm.com/downloads) and ensure it is in your PATH.",
+    "uv": "Install uv (https://docs.astral.sh/uv/getting-started/installation/) and ensure it is in your PATH.",
+    # uvx is shipped by uv, so the install instructions are the same.
+    "uvx": "uvx is part of uv. Install uv (https://docs.astral.sh/uv/getting-started/installation/) and ensure it is in your PATH.",
+    "go": "Install Go (https://go.dev/doc/install) and ensure it is in your PATH.",
 }
 
 
@@ -81,7 +83,7 @@ def _get_cleaned_path() -> str:
     return os.pathsep.join(cleaned_parts)
 
 
-def _is_windows() -> bool:
+def is_windows() -> bool:
     """Returns True if the current operating system is Windows."""
     return os.name == "nt"
 
@@ -93,7 +95,7 @@ def _get_gcloud_fallback() -> str | None:
     typically happens if the user opted not to add gcloud to the PATH during
     installation.
     """
-    if not _is_windows():
+    if not is_windows():
         return None
 
     local_app_data = Path(
@@ -131,7 +133,7 @@ def require_tool(name: str, install_hint: str = "") -> str:
 
     path = shutil.which(name)
 
-    if path is None and _is_windows():
+    if path is None and is_windows():
         path = shutil.which(name, path=_get_cleaned_path())
 
     if path is None:
@@ -149,125 +151,26 @@ def require_tool(name: str, install_hint: str = "") -> str:
     return path
 
 
-def run_npx_skills(args: list[str], spinner_msg: str) -> list[str]:
+# Where `agents-cli setup` fetches the bundled skills from.
+DEFAULT_SKILLS_SOURCE = "https://github.com/google/agents-cli"
+
+
+def run_npx_skills(args: list[str], spinner_msg: str):
     """Run an npx skills command, streaming output in real-time.
 
     Always starts with ``["npx", "-y", SKILLS_NPX_PACKAGE]`` and appends
     the additional ``args`` provided.
-    Streams stdout/stderr line-by-line, filtering npm/npx boilerplate.
-    All non-noise lines are printed immediately. Only concise summary
-    lines (e.g. "Installed 6 skills", "Found 6 skills") are collected
-    for the end summary.
 
-    Failure lines (e.g. "✗ Failed to update <skill>") are re-colored red and
-    counted; if any are observed the command raises even when npx itself
-    exits 0, since `npx skills update` reports per-skill failures via stdout
-    but still exits cleanly.
-
-    Returns:
-        A list of summary-worthy lines (short, no decorative content).
     Raises:
-        click.ClickException: If the npx process exits non-zero, or if any
-            per-skill failures were observed in the streamed output.
+        click.ClickException: If the npx process exits non-zero.
     """
-    from google.agents.cli._runner import popen_resolved
+    from google.agents.cli._runner import run_resolved
     from google.agents.cli._skills_check import SKILLS_NPX_PACKAGE
 
     full_args = ["npx", "-y", SKILLS_NPX_PACKAGE, *args]
-    click.secho(f"  \u25b8 {shlex.join(full_args)}", fg="cyan", dim=True)
+    click.secho(f"  ▸ {shlex.join(full_args)}", fg="cyan", dim=True)
 
-    # Disable color in the child process. We re-emit each captured line via
-    # click.echo, so any ANSI sequences from the child would either render as
-    # literal escape codes or, on Windows PowerShell, bleed across line
-    # boundaries — causing error lines to inherit the previous line's color
-    # (e.g. green progress markers making "Failed to update" appear green).
-    # See b/525049570.
-    child_env = {**os.environ, "NO_COLOR": "1", "FORCE_COLOR": "0"}
-
-    summary_lines: list[str] = []
-    failure_lines: list[str] = []
-    # Pipe stderr and drain it concurrently in a background thread to avoid
-    # pipe-buffer deadlock.
-    proc = popen_resolved(
-        full_args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=child_env,
-    )
-
-    stderr_capture = {"data": ""}
-
-    def _drain_stderr() -> None:
-        try:
-            stderr_capture["data"] = proc.stderr.read() if proc.stderr else ""
-        except Exception:
-            stderr_capture["data"] = ""
-
-    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-    stderr_thread.start()
-
-    # Read stdout line-by-line
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        # Defensively strip any leaked ANSI escape sequences so we control how
-        # the line renders.
-        stripped = _ANSI_RE.sub("", line).strip()
-        if not stripped:
-            continue
-        # Skip npx download/cache noise
-        if stripped.startswith("npm ") or stripped.startswith("npx:"):
-            continue
-        # Skip ASCII art banners (block characters)
-        if any(ch in stripped for ch in "█╗╔║╚╝"):
-            continue
-        # Strip leading box-drawing / bullet / status-glyph prefixes to extract
-        # text. We intentionally also strip "✗" so we can re-emit the line with
-        # our own (correct) red coloring below.
-        clean = stripped.lstrip("┌┐└┘├┤│◇●◆✓✗─╮╯ ")
-        if not clean:
-            continue
-        # Skip per-agent detail lines
-        if clean.startswith(("universal:", "symlink", "overwrites:")):
-            continue
-        # Skip purely decorative headers (e.g. "Installation Summary ────")
-        if "──" in clean:
-            continue
-
-        # Detect per-skill failures. npx skills reports these as
-        # "✗ Failed to update <skill>" followed by a "Failed to update N
-        # skill(s)" summary line. Either form is a hard failure for us.
-        is_failure = clean.startswith("Failed ") or "Failed to update" in clean
-        if is_failure:
-            failure_lines.append(clean)
-            click.secho(f"  ✗ {clean}", fg="red")
-        else:
-            click.echo(f"  {clean}")
-
-        # Collect concise summary-worthy lines for the recap
-        if len(clean) < 80 and clean.startswith(
-            ("Installed", "Found", "Done", "Removed", "Updated")
-        ):
-            summary_lines.append(clean)
-
-    proc.wait()
-    stderr_thread.join()
-
-    if proc.returncode != 0:
-        stderr = stderr_capture["data"]
-        click.secho("  Error running npx skills:", fg="red")
-        if stderr.strip():
-            for line in stderr.strip().splitlines():
-                click.echo(f"  {line}")
-        raise click.ClickException("npx skills failed")
-
-    if failure_lines:
-        # npx skills exits 0 even when individual skill operations fail, so we
-        # surface those failures as a non-zero exit ourselves.
-        raise click.ClickException(
-            f"npx skills reported {len(failure_lines)} failure(s); see output above."
-        )
-
-    return summary_lines
+    try:
+        run_resolved(full_args, check=True, encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise click.ClickException("Error running npx skills") from e

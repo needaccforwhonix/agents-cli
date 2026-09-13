@@ -30,8 +30,37 @@ from google.agents.cli._project import (
     read_project_config,
 )
 from google.agents.cli._skills_check import get_installed_skills
+from google.agents.cli.extension._loader import ExtensionSet, load_extension_set
+from google.agents.cli.extension._paths import user_config_root
 
 _CLI_INSTALL_PATH = str(Path(_cli_pkg.__file__).parent)
+
+
+def _print_extensions(extension_set: ExtensionSet) -> None:
+    rows = extension_set.command_rows()
+    conflicts = extension_set.conflict_rows()
+    incompatible = extension_set.incompatible_rows()
+    if not rows and not conflicts and not incompatible:
+        return
+    click.echo()
+    click.echo("Extensions (experimental):")
+    for r in rows:
+        line = (
+            f"  {r['command']}  ({r['kind']}, {r['scope']}) "
+            f"<- {r['extension']}: {' '.join(r['run'])}"
+        )
+        if r.get("requires"):
+            line += f"  [requires agents-cli {r['requires']}]"
+        if r.get("blocked"):
+            line += "  [BLOCKED: out of range, this command will not run]"
+        click.echo(line)
+    for c in conflicts:
+        click.echo(f"  ! conflict: {c} (claimed by multiple same-scope extensions)")
+    for inc in incompatible:
+        click.echo(
+            f"  ! incompatible: {inc['extension']} requires agents-cli "
+            f"{inc['requires']} (running {inc['running']})"
+        )
 
 
 def _print_installed_skills(
@@ -62,6 +91,7 @@ def cmd_info(as_json: bool) -> None:
     installed_skills = get_installed_skills()
     project_root = find_project_root()
     os_info = platform.platform()
+    extension_set = load_extension_set(project_root, user_config_root())
     if project_root is None:
         if as_json:
             emit(
@@ -71,6 +101,9 @@ def cmd_info(as_json: bool) -> None:
                     "os_info": os_info,
                     "installed_skills": installed_skills,
                     "project": None,
+                    "extensions": extension_set.command_rows(),
+                    "extension_conflicts": extension_set.conflict_rows(),
+                    "extension_incompatible": extension_set.incompatible_rows(),
                 }
             )
         else:
@@ -78,6 +111,7 @@ def cmd_info(as_json: bool) -> None:
             click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
             click.echo(f"OS info:            {os_info}")
             _print_installed_skills(installed_skills)
+            _print_extensions(extension_set)
             click.echo()
             click.echo("No agent project found in the current directory or any parent.")
             click.echo("  Run this command from within a project, or create one:")
@@ -94,10 +128,14 @@ def cmd_info(as_json: bool) -> None:
         "installed_skills": installed_skills,
         "project_root": str(project_root),
         "project_name": cfg.project_name,
+        "language": cfg.language,
         "deployment_target": cfg.deployment_target,
         "agent_directory": cfg.agent_directory,
         "is_a2a": cfg.is_a2a,
         "region": cfg.region,
+        "extensions": extension_set.command_rows(),
+        "extension_conflicts": extension_set.conflict_rows(),
+        "extension_incompatible": extension_set.incompatible_rows(),
     }
 
     if as_json:
@@ -111,8 +149,10 @@ def cmd_info(as_json: bool) -> None:
     click.echo()
     click.echo(f"Project root:       {project_root}")
     click.echo(f"Project name:       {cfg.project_name or '(not set)'}")
+    click.echo(f"Language:           {cfg.language}")
     click.echo(f"Deployment target:  {cfg.deployment_target}")
     click.echo(f"Agent directory:    {cfg.agent_directory}")
     click.echo(f"Region:             {cfg.region}")
     if cfg.is_a2a:
         click.echo("A2A:                yes")
+    _print_extensions(extension_set)

@@ -24,7 +24,6 @@ steps:
       - |
         docker build \
           -t $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
-          --build-arg COMMIT_SHA=$COMMIT_SHA \
           .
         docker push $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA
 
@@ -44,7 +43,8 @@ steps:
 {%- endif %}
           --project ${_STAGING_PROJECT_ID} \
           --region ${_REGION} \
-          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA
+          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=$COMMIT_SHA"
 
   # Fetch Staging Service URL
   - name: "gcr.io/cloud-builders/gcloud"
@@ -74,7 +74,6 @@ steps:
       - |
         docker build \
           -t $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
-          --build-arg COMMIT_SHA=$COMMIT_SHA \
           .
         docker push $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA
 
@@ -96,7 +95,8 @@ steps:
           --project ${_STAGING_PROJECT_ID} \
           --region ${_REGION} \
           --cluster-name ${_GKE_CLUSTER_NAME} \
-          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA
+          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=$COMMIT_SHA"
 
   # Get GKE credentials for port-forward
   - name: "gcr.io/cloud-builders/gcloud"
@@ -133,7 +133,7 @@ steps:
           --project ${_STAGING_PROJECT_ID} \
           --region ${_REGION} \
           --service-account=${_APP_SERVICE_ACCOUNT_STAGING} \
-          --update-env-vars="COMMIT_SHA=${COMMIT_SHA},LOGS_BUCKET_NAME=${_LOGS_BUCKET_NAME_STAGING}"
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=${COMMIT_SHA},LOGS_BUCKET_NAME=${_LOGS_BUCKET_NAME_STAGING}"
 
 
   - name: gcr.io/cloud-builders/gcloud

@@ -17,7 +17,11 @@
 import re
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
+# Canonical IDE skills live inside the package so they ship in the wheel.
+SKILLS_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "src/google/agents/cli/skills/data"
+)
 OUTPUT_FILE = Path(__file__).resolve().parent.parent / "src" / "reference" / "skills.md"
 
 HEADER = """# Skills Reference

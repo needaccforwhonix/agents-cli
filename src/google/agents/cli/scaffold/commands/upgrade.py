@@ -18,11 +18,12 @@ import logging
 import pathlib
 
 import click
-from rich.console import Console
 
+from google.agents.cli import _tools
+from google.agents.cli._output import Console
 from google.agents.cli._project import find_project_config, find_project_root
-from google.agents.cli._tools import ToolNotFoundError, require_tool
 
+from ..utils.backup import create_project_backup
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.merge import run_three_way_merge
 from ..utils.upgrade import (
@@ -34,15 +35,6 @@ from ..utils.upgrade import (
 from ..utils.version import get_current_version
 
 console = Console()
-
-
-def _ensure_uvx_available() -> bool:
-    """Check if uvx is available."""
-    try:
-        require_tool("uvx")
-        return True
-    except ToolNotFoundError:
-        return False
 
 
 def _display_version_header(old_version: str, new_version: str) -> None:
@@ -141,15 +133,11 @@ def upgrade(
         )
         return
 
-    # Check if uvx is available for re-templating old version
-    if not _ensure_uvx_available():
-        console.print(
-            "[bold red]Error:[/bold red] 'uvx' is required for upgrade but not installed."
-        )
-        console.print(
-            "[dim]Install uv to enable upgrade: curl -LsSf https://astral.sh/uv/install.sh | sh[/dim]"
-        )
-        raise SystemExit(1)
+    # We check this up front here because the underlying code would catch this
+    # and fall back to the current templates, which would make the baseline
+    # identical to the new template — the merge would find nothing to do and
+    # still stamp the new version into the manifest.
+    _tools.require_tool("uvx")
 
     _display_version_header(old_version, new_version)
 
@@ -158,9 +146,22 @@ def upgrade(
     agent_directory = metadata.agent_directory or "app"
     cli_args = metadata_to_cli_args(metadata)
 
+    # -- Pre-apply hook: back up the project before writing changes ----------
+    def _backup(proj_dir: pathlib.Path) -> bool:
+        try:
+            create_project_backup(
+                proj_dir,
+                console=console,
+                auto_approve=auto_approve,
+                interactive=interactive,
+            )
+            return True
+        except click.Abort:
+            return False  # user cancelled
+
     # Post-apply: stamp the new version into the manifest
     def _update_version(proj_dir: pathlib.Path, lang: str) -> None:
-        update_acli_metadata(proj_dir, {}, acli_version=new_version, language=lang)
+        update_acli_metadata(proj_dir, {}, acli_version=new_version)
 
     # Migrate before the merge so a customized evalset isn't clobbered by the
     # stock template default the merge would otherwise copy in first.
@@ -179,6 +180,7 @@ def upgrade(
         dry_run=dry_run,
         interactive=interactive,
         operation_label="upgrade",
+        pre_apply_hook=_backup,
         post_apply_hook=_update_version,
     )
 

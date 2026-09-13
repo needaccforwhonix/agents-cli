@@ -27,11 +27,10 @@ from google.agents.cli._runner import run_resolved
 
 from .lock_utils import _scaffold_root, get_agent_configs, get_lock_filename
 
-# Path to Go base template
-GO_BASE_TEMPLATE = _scaffold_root() / "base_templates" / "go"
-
-# Path to TypeScript base template
-TS_BASE_TEMPLATE = _scaffold_root() / "base_templates" / "typescript"
+# go.mod/go.sum and package.json/package-lock.json live in the agent layer: the
+# go and typescript base templates are framework-neutral and declare no deps.
+GO_AGENT_TEMPLATE = _scaffold_root() / "agents" / "adk_go"
+TS_AGENT_TEMPLATE = _scaffold_root() / "agents" / "adk_ts"
 
 
 def ensure_lock_dir() -> pathlib.Path:
@@ -74,6 +73,9 @@ def generate_pyproject(
             "project_name": "locked-template",
             "deployment_target": deployment_target,
             "extra_dependencies": list(config.get("extra_dependencies", [])),
+            "extra_optional_dependencies": dict(
+                config.get("extra_optional_dependencies", {})
+            ),
             "tags": tags,
             "is_a2a": "a2a" in tags,
             "agent_directory": config.get("agent_directory", "app"),
@@ -143,20 +145,20 @@ def generate_lock_file(pyproject_content: str, output_path: pathlib.Path) -> Non
 
 
 def generate_go_lock_file() -> None:
-    """Generate go.sum and go.mod for Go base template.
+    """Generate go.sum and go.mod for the adk_go template.
 
     Creates a temporary Go project using the CLI, runs go mod tidy,
     then copies go.sum and go.mod back to the template (with project name
     replaced by the Jinja variable).
     """
-    go_mod_path = GO_BASE_TEMPLATE / "go.mod"
-    go_sum_path = GO_BASE_TEMPLATE / "go.sum"
+    go_mod_path = GO_AGENT_TEMPLATE / "go.mod"
+    go_sum_path = GO_AGENT_TEMPLATE / "go.sum"
 
     if not go_mod_path.exists():
         print("Skipping Go lock generation: go.mod template not found")
         return
 
-    print("Generating go.sum for Go base template...")
+    print("Generating go.sum for the adk_go template...")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir = pathlib.Path(tmpdir)
@@ -214,20 +216,20 @@ def generate_go_lock_file() -> None:
 
 
 def generate_typescript_lock_file() -> None:
-    """Generate package-lock.json for TypeScript base template.
+    """Generate package-lock.json for the adk_ts template.
 
     Creates a temporary TypeScript project using the CLI, runs npm install,
     then copies package-lock.json back to the template (with project name
     replaced by the Jinja variable).
     """
-    package_json_path = TS_BASE_TEMPLATE / "package.json"
-    lock_path = TS_BASE_TEMPLATE / "package-lock.json"
+    package_json_path = TS_AGENT_TEMPLATE / "package.json"
+    lock_path = TS_AGENT_TEMPLATE / "package-lock.json"
 
     if not package_json_path.exists():
         print("Skipping TypeScript lock generation: package.json template not found")
         return
 
-    print("Generating package-lock.json for TypeScript base template...")
+    print("Generating package-lock.json for the adk_ts template...")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir = pathlib.Path(tmpdir)

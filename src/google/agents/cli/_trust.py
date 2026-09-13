@@ -24,7 +24,7 @@ def require_confirmation(message: str):
 
     In interactive mode (-i), the user is prompted to confirm the action.
     In auto-approve mode (-y) or strict programmatic mode (no flags), proceeds silently.
-    The decorated function receives 'yes' and 'interactive' parameters.
+    The decorated function receives an 'auto_approve' parameter.
 
     Args:
         message: Confirmation prompt shown to the user.
@@ -42,21 +42,24 @@ def require_confirmation(message: str):
             "-y",
             "--yes",
             "--auto-approve",
+            "auto_approve",
             is_flag=True,
             default=False,
             help="Skip confirmation prompt.",
         )
         @functools.wraps(f)
-        def wrapper(*args, interactive=False, yes=False, **kwargs):
-            if interactive and not yes:
+        def wrapper(*args, interactive=False, auto_approve=False, **kwargs):
+            if interactive and not auto_approve:
                 click.echo()
                 if not click.confirm(f"  {message}", default=False):
                     click.echo()
                     click.secho("  Aborted.", fg="yellow")
                     return
                 click.echo()
-            # In strict programmatic mode (no -i, no -y): auto-proceed silently
-            return f(*args, yes=yes, interactive=interactive, **kwargs)
+            # In strict programmatic mode (no -i, no -y): auto-proceed silently.
+            # `interactive` is not passed on: the prompt happens here, and no
+            # decorated command has ever read it.
+            return f(*args, auto_approve=auto_approve, **kwargs)
 
         return wrapper
 

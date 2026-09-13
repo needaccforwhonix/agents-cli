@@ -29,7 +29,7 @@ from google.agents.cli._trust import require_confirmation
     help="Update workspace-level skills instead of global.",
 )
 @require_confirmation("This will force-reinstall agents-cli skills to all detected IDEs.")
-def cmd_update(workspace, yes, interactive):
+def cmd_update(workspace, auto_approve):
     """Force reinstall agents skills to all detected coding agents.
 
     Updates all installed skills to their latest versions via npx skills.

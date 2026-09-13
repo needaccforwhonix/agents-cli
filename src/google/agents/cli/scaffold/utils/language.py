@@ -21,55 +21,83 @@ used by enhance and upgrade commands. It provides:
 - get_language_config(): Get config dict for a language
 """
 
+import logging
 import pathlib
+import tomllib
+from collections.abc import Callable, Mapping
 from typing import Any
+
+import click
+
+
+def _read_python_version(root: pathlib.Path) -> str:
+    """Return the ``[project].version`` from ``pyproject.toml`` or raise."""
+    pyproject_path = root / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise FileNotFoundError(f"pyproject.toml not found in {root}")
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)  # PEP 621 [project] section
+    version = data.get("project", {}).get("version")
+    if version and isinstance(version, str):
+        return version
+    raise KeyError(f"no [project].version in {pyproject_path}")
+
 
 # =============================================================================
 # Language Configuration
 # =============================================================================
 # To add a new language, add an entry with the required keys.
 
+
 LANGUAGE_CONFIGS: dict[str, dict[str, Any]] = {
     "python": {
         "lock_file": "uv.lock",
         "lock_command": ["uv", "lock"],
         "lock_command_name": "uv lock",
-        "strip_dependencies": True,
         "display_name": "Python",
         "agent_file": "agent.py",
         "agent_variable": "root_agent",
         "agent_in_subdirectory": False,
+        "version_reader": _read_python_version,
+        "api_base_path": "",
+        "a2a_base_path_factory": lambda app_name: f"/a2a/{app_name}",
     },
     "go": {
         "lock_file": "go.sum",
         "lock_command": ["go", "mod", "tidy"],
         "lock_command_name": "go mod tidy",
-        "strip_dependencies": False,
         "display_name": "Go",
         "agent_file": "agent.go",
         "agent_variable": "RootAgent",
         "agent_in_subdirectory": False,
+        "version_reader": None,
+        "api_base_path": "",
+        "a2a_base_path_factory": lambda _app_name: "",
     },
     "java": {
         "lock_file": None,  # Maven doesn't have a separate lock file
         "lock_command": ["mvn", "dependency:resolve"],
         "lock_command_name": "mvn dependency:resolve",
-        "strip_dependencies": False,
         "display_name": "Java",
         "agent_file": "Agent.java",
         "agent_file_pattern": "**/Agent.java",
         "agent_variable": "ROOT_AGENT",
         "agent_in_subdirectory": True,  # Java uses package subdirectories
+        "version_reader": None,
+        "api_base_path": "",
+        "a2a_base_path_factory": None,
     },
     "typescript": {
         "lock_file": "package-lock.json",
         "lock_command": ["npm", "install", "--package-lock-only"],
         "lock_command_name": "npm install --package-lock-only",
-        "strip_dependencies": False,
         "display_name": "TypeScript",
         "agent_file": "agent.ts",
         "agent_variable": "rootAgent",
         "agent_in_subdirectory": False,
+        "version_reader": None,
+        "api_base_path": "",
+        "a2a_base_path_factory": None,
     },
 }
 
@@ -84,6 +112,43 @@ def get_language_config(language: str) -> dict[str, Any]:
         The language configuration dict, or Python config as fallback
     """
     return LANGUAGE_CONFIGS.get(language, LANGUAGE_CONFIGS["python"])
+
+
+class UnsupportedLanguageError(click.ClickException):
+    """Raised when a command has no handler for the project's language."""
+
+
+def dispatch_language(
+    command_name: str,
+    handlers: Mapping[str, Callable | None],
+    language: str,
+) -> Callable:
+    """Return the handler for ``language``, or raise a clear error.
+
+    A ``None`` entry (or a missing key) means the command is intentionally not
+    wired up for that language yet, so the user gets an actionable message
+    instead of the command silently doing the wrong thing.
+
+    Args:
+        command_name: The user-facing command (e.g. ``"install"``) for messages.
+        handlers: Map of language -> handler callable (or ``None`` if the
+            command doesn't support that language yet).
+        language: The project's language.
+
+    Returns:
+        The handler callable for ``language``.
+
+    Raises:
+        UnsupportedLanguageError: If no handler is registered for ``language``.
+    """
+    handler = handlers.get(language)
+    if handler is None:
+        supported = ", ".join(sorted(k for k, v in handlers.items() if v is not None))
+        raise UnsupportedLanguageError(
+            f"`agents-cli {command_name}` isn't supported for '{language}' "
+            f"projects.\n  Supported languages: {supported}."
+        )
+    return handler
 
 
 def find_agent_file(
@@ -206,44 +271,31 @@ def get_project_version(
     project_dir: str | pathlib.Path,
     default_version: str = "0.0.0",
 ) -> str:
-    """Extract the project version field from pyproject.toml if it exists.
+    """Extract the project version, falling back to ``default_version``.
+    Dispatches on the project language to its config ``version_reader``. Languages with no reader take the default silently.
 
     Args:
         project_dir: The project root directory.
         default_version: The fallback version to return if not found.
-
     Returns:
         The extracted version string, or default_version.
     """
-    import logging
-    import tomllib
-    from pathlib import Path
+    from google.agents.cli._project import read_project_config
 
-    root = Path(project_dir)
-    pyproject_path = root / "pyproject.toml"
+    root = pathlib.Path(project_dir)
+    language = read_project_config(str(root)).language
+    reader = get_language_config(language).get("version_reader")
+    if reader is None:
+        return default_version
 
     try:
-        if not pyproject_path.exists():
-            raise FileNotFoundError(f"pyproject.toml not found in {project_dir}")
-
-        with open(pyproject_path, "rb") as f:
-            data = tomllib.load(f)
-        # Standard PEP 621 [project] section
-        version = data.get("project", {}).get("version")
-        if version and isinstance(version, str):
-            return version
-        else:
-            raise KeyError(
-                f"Could not find project version in pyproject.toml under {project_dir}"
-            )
+        return reader(root)
     except Exception as e:
         logging.warning(
-            "Could not read the project version from the [project].version field "
-            "of %s (%s). Falling back to %s — set the version in pyproject.toml, "
-            "or pass AGENT_VERSION via --update-env-vars to override.",
-            pyproject_path,
+            "Could not read the project version (%s). Falling back to %s — set "
+            "the version in your project, or pass AGENT_VERSION via "
+            "--update-env-vars to override.",
             e,
             default_version,
         )
-
     return default_version
