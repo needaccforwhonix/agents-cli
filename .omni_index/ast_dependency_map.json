@@ -1,0 +1,543 @@
+[
+  {
+    "file": "CONTRIBUTING.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "README.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "LICENSE",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "gemini-extension.json",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "RELEASE_NOTES.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/pyproject.toml",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/mkdocs.yml",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/hooks/skills_reference.py",
+    "dependencies": [
+      "re",
+      "pathlib",
+      "Path"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/index.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/assets/logos/openai.svg",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/cli/index.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/project-structure.md",
+    "dependencies": [
+      "google.adk.models",
+      "google.adk.agents",
+      "types",
+      "google.adk.apps",
+      "Gemini",
+      "google.genai",
+      "Agent",
+      "App"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/lifecycle.md",
+    "dependencies": [
+      "google.adk.models",
+      "google.adk.agents",
+      "VertexAiMemoryBankService",
+      "google.adk.apps",
+      "google.adk.memory",
+      "Gemini",
+      "Agent",
+      "App"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/authentication.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/development.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/cicd.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/deployment.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/getting-started.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/hands-on-tutorial.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/quickstart-tutorial.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/evaluation.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/use-cases.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/templates.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/observability/bq-agent-analytics.md",
+    "dependencies": [
+      "google.adk.plugins.bigquery_agent_analytics_plugin"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/observability/cloud-trace.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/guide/observability/index.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/reference/eval-dataset-migration.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/reference/skills.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/reference/about.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/reference/from-agent-starter-pack.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/reference/index.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/stylesheets/custom.css",
+    "dependencies": [
+      "url"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/javascripts/lifecycle.js",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "docs/src/javascripts/persona.js",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/README.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/SKILL.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/references/dataset_schema.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/references/multimodal-eval.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/references/user-simulation.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/references/builtin-tools-eval.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-eval/references/metrics-guide.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-observability/SKILL.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-observability/references/bigquery-agent-analytics.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-observability/references/cloud-trace-and-logging.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/SKILL.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/gke.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/terraform-patterns.md",
+    "dependencies": [
+      "google_cloud_run_v2_service.app",
+      "google_service_account.app_sa",
+      "google_secret_manager_secret.my_secret",
+      "them"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/cloud-run.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/agent-runtime.md",
+    "dependencies": [
+      "vertexai"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/batch-inference.md",
+    "dependencies": [
+      "Request",
+      "root_agent",
+      "types",
+      "asyncio",
+      "InMemorySessionService",
+      "google.adk.sessions",
+      "Runner",
+      "google.genai",
+      "google.adk.runners",
+      "my_agent.agent",
+      "fastapi"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/testing-deployed-agents.md",
+    "dependencies": [
+      "json",
+      "vertexai"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-deploy/references/cicd-pipeline.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-publish/SKILL.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-adk-code/SKILL.md",
+    "dependencies": [
+      "google",
+      "FunctionTool",
+      "google.adk.agents",
+      "load_web_page",
+      "genai",
+      "google.adk.agents.callback_context",
+      "CallbackContext",
+      "google.adk.tools",
+      "google.adk.tools.load_web_page",
+      "Agent"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-adk-code/references/adk-2.0.md",
+    "dependencies": [
+      "InMemoryRunner",
+      "pytest",
+      "google.adk.events.request_input",
+      "Context",
+      "google.adk.runners",
+      "BaseNode",
+      "JoinNode",
+      "BaseModel",
+      "agent",
+      ".",
+      "google.adk.apps",
+      "Workflow",
+      "ResumabilityConfig",
+      "wrapper",
+      "node",
+      "RetryConfig",
+      "google.adk.agents.context",
+      "FunctionNode",
+      "Node",
+      "types",
+      "google.adk.agents",
+      "RequestInput",
+      "google.genai",
+      "google.adk.events.event",
+      "LlmAgent",
+      "pydantic",
+      "Edge",
+      "DEFAULT_ROUTE",
+      "Event",
+      "google.adk.workflow",
+      "App",
+      "or"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-adk-code/references/adk-python.md",
+    "dependencies": [
+      "google.adk.agents.invocation_context",
+      "OpenAPIToolset",
+      "InMemoryRunner",
+      "google.adk.events",
+      "AsyncGenerator",
+      "InMemorySessionService",
+      "load_web_page",
+      "google.adk.tools.openapi_tool.openapi_spec_parser.openapi_toolset",
+      "google.adk.agents.remote_a2a_agent",
+      "BaseAgent",
+      "BuiltInCodeExecutor",
+      "CallbackContext",
+      "google.adk.runners",
+      "google.adk.tools.load_web_page",
+      "google.adk.models.llm_request",
+      "BaseModel",
+      "LoopAgent",
+      "LlmResponse",
+      "typing",
+      "Literal",
+      "ParallelAgent",
+      "BasePlugin",
+      "google.adk",
+      "google.adk.models",
+      "ToolContext",
+      "google.adk.a2a.utils.agent_to_a2a",
+      "to_a2a",
+      "google.adk.artifacts",
+      "google.adk.apps",
+      "google.adk.models.lite_llm",
+      "LlmEventSummarizer",
+      "token_to_scheme_credential",
+      "Agent",
+      "StdioServerParameters",
+      "ContextCacheConfig",
+      "VertexAiSearchTool",
+      "AgentTool",
+      "types",
+      "VertexAiCodeExecutor",
+      "google.adk.agents",
+      "google.adk.tools.mcp_tool.mcp_session_manager",
+      "google.adk.tools.preload_memory_tool",
+      "SequentialAgent",
+      "google.adk.tools.mcp_tool",
+      "google.adk.agents.callback_context",
+      "google.adk.models.llm_response",
+      "google.adk.code_executors",
+      "google_search",
+      "google.genai",
+      "McpToolset",
+      "AgentCard",
+      "google.adk.apps.llm_event_summarizer",
+      "StdioConnectionParams",
+      "a2a.types",
+      "google.adk.tools.openapi_tool.auth.auth_helpers",
+      "PreloadMemoryTool",
+      "FunctionTool",
+      "pydantic",
+      "get_fast_api_app",
+      "google.adk.memory",
+      "google.adk.sessions",
+      "google.adk.plugins.base_plugin",
+      "Gemini",
+      "InMemoryMemoryService",
+      "Event",
+      "Runner",
+      "LiteLlm",
+      "InMemoryArtifactService",
+      "google.adk.tools",
+      "mcp",
+      "RemoteA2aAgent",
+      "google.adk.agents.context_cache_config",
+      "App",
+      "google.adk.cli.fast_api",
+      "LlmRequest",
+      "InvocationContext"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-workflow/SKILL.md",
+    "dependencies": [
+      "google",
+      "genai",
+      "an"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-workflow/references/internals.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-scaffold/SKILL.md",
+    "dependencies": [
+      "paths"
+    ],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": "skills/google-agents-cli-scaffold/references/flags.md",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  },
+  {
+    "file": ".claude-plugin/plugin.json",
+    "dependencies": [],
+    "llama_nemotron_8b_status": "failed",
+    "gemini_embedding_2_status": "failed"
+  }
+]
